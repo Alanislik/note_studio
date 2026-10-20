@@ -21,3 +21,4 @@
 @keyframes note-pulse{from{opacity:1}to{opacity:.45}}
 @media(prefers-reduced-motion:reduce){#score.effect-pulse .note-playing{animation:none}}
 @media(max-width:790px){.studio-panel{padding:18px}.media-grid{grid-template-columns:1fr}.file-row{align-items:flex-start;flex-direction:column}.file-actions{gap:10px}.effect-controls{gap:15px}.top-actions{gap:10px}}
+.media-volume{display:flex;align-items:center;gap:10px;font-size:12px;color:#6a627b;margin-top:16px}.media-volume input{flex:1;min-width:40px;accent-color:#7354df;cursor:pointer}.media-volume output{min-width:38px;text-align:right;font-variant-numeric:tabular-nums}

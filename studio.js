@@ -17,6 +17,7 @@ class NotaStudio {
   $('#mediaInput').onchange=e=>this.addMedia(e.target.files);
   for(const id of ['noteColor','noteGlow','notePulse'])$('#'+id).addEventListener('change',()=>this.saveEffects());
   $('#resetEffects').onclick=()=>{this.applyEffects({});this.saveEffects()};
+  $('#mediaList').addEventListener('input',e=>this.previewVolume(e));
   $('#mediaList').addEventListener('change',e=>this.changeMedia(e));
   $('#mediaList').addEventListener('click',e=>this.mediaClick(e));
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)this.sync(currentPosition(),playing,playSpeed,true)});
@@ -73,10 +74,16 @@ class NotaStudio {
    const type=item.type.startsWith('image/')?'image':item.type.startsWith('video/')?'video':'audio';
    // Media URLs always point to our own file endpoint, never to arbitrary HTML.
    const url='/api/files/'+encodeURIComponent(item.id);
-   card.innerHTML=`<div class="media-preview"></div><div class="media-info"><strong>${esc(item.name)}</strong><small>${type==='image'?'Изображение':type==='video'?'Видео':'Аудио'} · ${this.size(item.size)}</small><div class="media-timing"><label><input type="checkbox" data-field="sync" ${item.sync?'checked':''}> С плеером</label><label>С <input type="number" min="0" step="0.1" data-field="start" value="${Number(item.start)||0}" aria-label="Начало ${esc(item.name)}"> сек</label><label>До <input type="number" min="0" step="0.1" data-field="end" value="${Number(item.end)||''}" placeholder="конца" aria-label="Конец ${esc(item.name)}"> сек</label></div><div class="media-actions"><button class="text-link" data-media-action="here">Начать отсюда</button><a class="text-link" href="${url}?download=1" download>Скачать</a><button class="text-link danger" data-media-action="delete">Удалить</button></div><p class="media-error" role="status"></p></div>`;
+   const volume=this.volume(item);
+   card.innerHTML=`<div class="media-preview"></div><div class="media-info"><strong>${esc(item.name)}</strong><small>${type==='image'?'Изображение':type==='video'?'Видео':'Аудио'} · ${this.size(item.size)}</small>${type==='image'?'':`<label class="media-volume">Громкость <input type="range" min="0" max="1" step="0.01" value="${volume}" data-field="volume" aria-label="Громкость ${esc(item.name)}"><output>${Math.round(volume*100)}%</output></label>`}<div class="media-timing"><label><input type="checkbox" data-field="sync" ${item.sync?'checked':''}> С плеером</label><label>С <input type="number" min="0" step="0.1" data-field="start" value="${Number(item.start)||0}" aria-label="Начало ${esc(item.name)}"> сек</label><label>До <input type="number" min="0" step="0.1" data-field="end" value="${Number(item.end)||''}" placeholder="конца" aria-label="Конец ${esc(item.name)}"> сек</label></div><div class="media-actions"><button class="text-link" data-media-action="here">Начать отсюда</button><a class="text-link" href="${url}?download=1" download>Скачать</a><button class="text-link danger" data-media-action="delete">Удалить</button></div><p class="media-error" role="status"></p></div>`;
    let el;
    if(type==='image'){el=document.createElement('img');el.alt=item.name;el.loading='lazy'}
    else{el=document.createElement(type);el.controls=true;el.preload='metadata';el.playsInline=true;el.addEventListener('loadedmetadata',()=>this.sync(currentPosition(),playing,playSpeed,true));el.addEventListener('error',()=>card.querySelector('.media-error').textContent='Браузер не смог открыть этот формат. Можно скачать файл и открыть его отдельно.')}
+   if(type!=='image'){el.volume=volume;el.addEventListener('volumechange',()=>{
+    const entry=this.media.find(m=>m.el===el);if(!entry||!card.isConnected||entry.previewVolume)return;
+    const range=card.querySelector('[data-field=volume]');range.value=el.volume;card.querySelector('.media-volume output').textContent=Math.round(el.volume*100)+'%';
+    if(el.volume!==this.volume(item))this.changeMedia({target:range});
+   })}
    if(type!=='image')el.addEventListener('play',()=>{const entry=this.media.find(m=>m.el===el);if(entry){entry.blocked=false;card.querySelector('.media-error').textContent=''}});
    el.src=url;card.querySelector('.media-preview').append(el);list.append(card);
    this.media.push({item,el,card,type,pending:false});
@@ -94,7 +101,7 @@ class NotaStudio {
     if(file.size>100*1024*1024)throw Error('Максимум 100 МБ');
     $('#mediaStatus').textContent='Сохраняется: '+file.name;
     uploaded=await this.upload(piece.id,file);
-    const item={...uploaded,start:0,end:null,sync:false};piece.media=[...(piece.media||[]),item];
+    const item={...uploaded,start:0,end:null,sync:false,volume:1};piece.media=[...(piece.media||[]),item];
     try{await putPiece(piece)}catch(error){piece.media=piece.media.filter(m=>m.id!==item.id);throw error}
    }catch(error){if(uploaded)await this.request('/api/files/'+uploaded.id,{method:'DELETE'}).catch(()=>{});problems.push(file.name+': '+error.message)}
   }
@@ -102,13 +109,25 @@ class NotaStudio {
   if(activeId===piece.id&&view==='reader')this.renderMedia(piece);this.renderFiles();
   if(problems.length)toast(problems.join('; '));
  }
+ volume(item){return Number.isFinite(item.volume)?Math.max(0,Math.min(1,item.volume)):1}
+ previewVolume(event){
+  if(event.target.dataset.field!=='volume')return;
+  const card=event.target.closest('[data-media-id]'),entry=this.media.find(m=>m.card===card);if(!entry)return;
+  const volume=Number(event.target.value);if(!Number.isFinite(volume))return;
+  entry.previewVolume=true;entry.el.volume=Math.max(0,Math.min(1,volume));entry.el.muted=false;
+  card.querySelector('.media-volume output').textContent=Math.round(entry.el.volume*100)+'%';
+ }
  async changeMedia(event){
   const field=event.target.dataset.field,card=event.target.closest('[data-media-id]');if(!field||!card)return;
   const piece=songs.find(p=>p.id===activeId),item=piece?.media?.find(m=>m.id===card.dataset.mediaId);if(!item)return;
   const previous={...item};const value=field==='sync'?event.target.checked:event.target.value===''?null:Number(event.target.value);
+  if(field==='volume'){
+   if(!Number.isFinite(value)||value<0||value>1)return;
+   const entry=this.media.find(m=>m.card===card);if(entry){entry.previewVolume=false;entry.el.volume=value;entry.el.muted=false;card.querySelector('.media-volume output').textContent=Math.round(value*100)+'%'}
+  }
   item[field]=value;
   if((field!=='sync'&&value!==null&&(!Number.isFinite(value)||value<0))||(item.end!==null&&Number(item.end)<=Number(item.start))){Object.assign(item,previous);event.target.value=previous[field]??'';toast('Конец должен быть позже начала; время не может быть отрицательным.');return}
-  try{await putPiece(piece);this.sync(currentPosition(),playing,playSpeed,true)}catch(error){Object.assign(item,previous);this.renderMedia(piece);toast(error.message)}
+  try{await putPiece(piece);if(field!=='volume')this.sync(currentPosition(),playing,playSpeed,true)}catch(error){Object.assign(item,previous);this.renderMedia(piece);toast(error.message)}
  }
  async mediaClick(event){
   const action=event.target.dataset.mediaAction,card=event.target.closest('[data-media-id]');if(!action||!card)return;

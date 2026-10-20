@@ -46,6 +46,13 @@ test('originals, multiple media, cues and note effects persist and work together
  await page.waitForFunction(()=>document.querySelectorAll('.media-card').length===3);await waitSaved();
  await page.waitForFunction(()=>document.querySelector('.media-card img').naturalWidth>0&&document.querySelector('audio').readyState>0&&document.querySelector('video').readyState>0);
  const audioCard=page.locator('.media-card').filter({has:page.locator('audio')}),videoCard=page.locator('.media-card').filter({has:page.locator('video')});
+ const layout=await page.evaluate(()=>{const score=document.querySelector('.score-shell').getBoundingClientRect(),media=document.querySelector('[aria-labelledby=mediaTitle]').getBoundingClientRect(),player=document.querySelector('.player').getBoundingClientRect();return score.bottom<=media.top&&media.bottom<=player.top});assert.equal(layout,true);
+ assert.equal(await page.locator('.media-card').filter({has:page.locator('img')}).locator('[data-field=volume]').count(),0);
+ await audioCard.locator('[data-field=volume]').evaluate(el=>{el.value='0.35';el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});
+ await videoCard.locator('[data-field=volume]').evaluate(el=>{el.value='0.7';el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});await waitSaved();
+ assert.equal(await page.locator('audio').evaluate(el=>el.volume),.35);assert.equal(await page.locator('video').evaluate(el=>el.volume),.7);
+ assert.equal(await audioCard.locator('.media-volume output').textContent(),'35%');
+
  await audioCard.locator('[data-field=start]').fill('0.5');await audioCard.locator('[data-field=start]').dispatchEvent('change');
  await audioCard.locator('[data-field=end]').fill('2');await audioCard.locator('[data-field=end]').dispatchEvent('change');
  await audioCard.locator('[data-field=sync]').check();await videoCard.locator('[data-field=sync]').check();await waitSaved();
@@ -53,6 +60,8 @@ test('originals, multiple media, cues and note effects persist and work together
  assert.equal(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).fill),'rgb(0, 255, 170)');
  assert.equal(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).animationName),'note-pulse');
  assert.match(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).filter),/drop-shadow/);
+ await audioCard.locator('[data-field=volume]').evaluate(el=>{el.value='0';el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});await waitSaved();
+ assert.equal(await page.locator('audio').evaluate(el=>el.volume),0);assert.equal(await page.locator('video').evaluate(el=>el.volume),.7);assert.equal(await page.evaluate(()=>playing),true);
  await page.locator('#playBtn').click();await page.waitForFunction(()=>!playing&&document.querySelector('audio').paused&&document.querySelector('video').paused);
  await page.evaluate(()=>seek(1.3));assert.ok(Math.abs(await page.locator('audio').evaluate(el=>el.currentTime)-.8)<.1);
  await page.locator('#tempoInput').fill('160');await page.locator('#playBtn').click();await page.waitForFunction(()=>playing&&document.querySelector('audio').playbackRate>1.4);
@@ -66,6 +75,9 @@ test('originals, multiple media, cues and note effects persist and work together
  assert.match(await page.locator('#uploadedFiles').textContent(),/studio.musicxml/);
  await page.reload();await page.waitForFunction(()=>songs.length===6);await page.locator('#recentGrid [data-open="'+id+'"]').first().click();await page.waitForSelector('#score svg');
  assert.equal(await page.locator('.media-card').count(),3);
+ assert.equal(await audioCard.locator('[data-field=volume]').inputValue(),'0');assert.equal(await page.locator('audio').evaluate(el=>el.volume),0);
+ assert.equal(await videoCard.locator('[data-field=volume]').inputValue(),'0.7');assert.equal(await page.locator('video').evaluate(el=>el.volume),.7);
+ await page.locator('video').evaluate(el=>el.volume=.25);await page.waitForFunction(()=>document.querySelector('video').closest('.media-card').querySelector('[data-field=volume]').value==='0.25');await waitSaved();
  assert.equal(await audioCard.locator('[data-field=start]').inputValue(),'0.5');assert.equal(await audioCard.locator('[data-field=sync]').isChecked(),true);
  const attached=(await piece()).media;page.on('dialog',dialog=>dialog.accept());
  await audioCard.locator('[data-media-action=delete]').click();await page.waitForFunction(()=>document.querySelectorAll('.media-card').length===2);
