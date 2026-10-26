@@ -144,6 +144,11 @@
                             </div>
                         </div>
                         <div id="scoreMessage" class="score-message hidden"></div>
+                        <section id="sunsetScene" class="sunset-scene hidden" aria-label="Интерактивный закат семи солнц">
+                            <div class="sunset-caption"><span>SEVEN SUNS <b>·</b> ЖИВОЙ ПЕЙЗАЖ</span><span>Мелодия — свет · бас — вода</span></div>
+                            <canvas id="sunsetCanvas" role="img" aria-label="Семь солнц над морем. Ноты меняют свечение и отражения."></canvas>
+                            <div class="sunset-footer"><label>Позиция <input id="sunsetSeek" type="range" min="0" max="1000" value="0" disabled aria-label="Перемотка визуала и нот"></label><output id="sunsetTime">0:00 / 0:00</output></div>
+                        </section>
                         <div id="scoreMedia" class="score-media hidden" aria-label="Медиа к текущему моменту"></div>
                     </div>
                     <section class="studio-panel" aria-labelledby="mediaTitle">
@@ -181,6 +186,7 @@
                                 <p>Настройки сохраняются отдельно для каждого произведения.</p>
                             </div>
                         </div>
+                        <div class="visual-controls"><label><input id="sunsetEnabled" type="checkbox"> Визуал «Семь солнц»</label><label>Отклик на ноты <input id="sunsetIntensity" type="range" min="0" max="100" value="70"><output id="sunsetIntensityValue">70%</output></label><p>Для Sunset of Seven Suns включается автоматически. Щёлкните по пейзажу или перемотайте его ползунком — ноты перейдут к этому моменту.</p></div>
                         <div class="effect-controls"><label>Цвет звучащих нот <input id="noteColor" type="color"
                                     value="#8b4ce8"></label><label><input id="noteGlow" type="checkbox" checked>
                                 Свечение</label><label><input id="notePulse" type="checkbox"> Пульсация</label><button
@@ -231,6 +237,7 @@
     <script src="audio-engine.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.28/build/Midi.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="sunset-visual.js"></script>
     <script src="studio.js"></script>
     <script src="app.js"></script>
 </body>

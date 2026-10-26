@@ -1059,6 +1059,7 @@ async function openReader(id) {
     scoreTiming = parseMusicXML(piece.xml);
     playback = scoreTiming.notes;
     totalDuration = scoreTiming.duration;
+    studio.visual.setScore(scoreTiming);
 
     $('#tempoInput').value = Math.round(scoreTiming.bpm);
     renderScore();

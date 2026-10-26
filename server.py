@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
             if not row:
                 return self.error('Файл не найден.', 404)
             return self.send_file(self.server.store.directory / row['path'], row['type'], row['name'])
-        allowed = {'/', '/index.html', '/styles.css', '/app.js', '/audio-engine.js', '/studio.js'}
+        allowed = {'/', '/index.html', '/styles.css', '/app.js', '/audio-engine.js', '/studio.js', '/sunset-visual.js'}
         if path not in allowed:
             return self.error('Не найдено.', 404)
         file = ROOT / ('index.html' if path == '/' else path[1:])

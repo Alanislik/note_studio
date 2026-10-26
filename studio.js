@@ -25,6 +25,7 @@ class NotaStudio {
     this.media = [];              // отрисованные вложения: { item, el, card, type, ... }
     this.saving = Promise.resolve(); // очередь записи, чтобы быстрые правки не затирали друг друга
     this.lastPiece = null;
+    this.visual = new SunsetVisual($('#sunsetCanvas'), fraction => seek(totalDuration * fraction));
   }
 
   // ---------------------------------------------------------------------------
@@ -91,9 +92,31 @@ class NotaStudio {
 
     // Один набор обработчиков на весь список вложений (делегирование событий).
     const list = $('#mediaList');
-    list.addEventListener('input', event => this.previewVolume(event));
+    list.addEventListener('input', event => { this.previewVolume(event); this.previewLayout(event); });
     list.addEventListener('change', event => this.changeMedia(event));
     list.addEventListener('click', event => this.mediaClick(event));
+
+    $('#sunsetEnabled').addEventListener('change', () => this.saveVisual());
+    $('#sunsetIntensity').addEventListener('input', () => {
+      this.visual.intensity = Number($('#sunsetIntensity').value) / 100;
+      $('#sunsetIntensityValue').textContent = $('#sunsetIntensity').value + '%';
+      this.visual.render(currentPosition());
+    });
+    $('#sunsetIntensity').addEventListener('change', () => this.saveVisual());
+    $('#sunsetSeek').addEventListener('input', () => {
+      // Preview scrubbing without restarting hundreds of audio voices on every pointer move.
+      this.visual.scrubTime = totalDuration * Number($('#sunsetSeek').value) / 1000;
+      this.visual.render(this.visual.scrubTime);
+    });
+    $('#sunsetSeek').addEventListener('change', () => {
+      const target = this.visual.scrubTime;
+      this.visual.scrubTime = null;
+      if (target !== null && target !== undefined) seek(target);
+    });
+    $('#sunsetSeek').addEventListener('blur', () => {
+      this.visual.scrubTime = null;
+      this.visual.render(currentPosition());
+    });
 
     // Когда пользователь возвращается на вкладку, подтягиваем медиа к позиции нот.
     document.addEventListener('visibilitychange', () => {
@@ -233,6 +256,7 @@ class NotaStudio {
     this.close();
     this.lastPiece = piece.id;
     this.applyEffects(piece.effects || {});
+    this.visual.configure(piece);
     this.renderMedia(piece);
   }
 
@@ -245,6 +269,7 @@ class NotaStudio {
     this.urls = [];
     this.lastPiece = null;
     $('#scoreMedia').classList.add('hidden');
+    this.visual.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -292,6 +317,84 @@ class NotaStudio {
     }
   }
 
+  async saveVisual() {
+    const piece = songs.find(p => p.id === activeId);
+    if (!piece) return;
+    const previous = piece.visual;
+    const options = { enabled: $('#sunsetEnabled').checked, intensity: Number($('#sunsetIntensity').value) / 100 };
+    piece.visual = options;
+    this.visual.enabled = options.enabled;
+    this.visual.intensity = options.intensity;
+    $('#sunsetScene').classList.toggle('hidden', !options.enabled);
+    this.visual.render(currentPosition());
+    try { await putPiece(piece); }
+    catch (error) {
+      if (piece.visual === options) {
+        piece.visual = previous;
+        const timing = { notes: this.visual.notes, duration: this.visual.duration };
+        this.visual.configure(piece); this.visual.setScore(timing);
+      }
+      toast(error.message);
+    }
+  }
+
+  /** Dimensions describe the stage under the score; previews remain thumbnails. */
+  layout(item) {
+    const layout = item.layout || {};
+    return {
+      width: Number.isFinite(layout.width) ? Math.max(20, Math.min(100, layout.width)) : 100,
+      height: Number.isFinite(layout.height) ? Math.max(80, Math.min(720, layout.height)) : 320,
+      fit: layout.fit === 'cover' ? 'cover' : 'contain',
+    };
+  }
+
+  applyLayout(entry, layout = this.layout(entry.item)) {
+    for (const node of [entry.card, entry.slot]) {
+      if (!node) continue;
+      node.style.setProperty('--media-width', layout.width + '%');
+      node.style.setProperty('--media-height', layout.height + 'px');
+      node.style.setProperty('--media-fit', layout.fit);
+    }
+    if (entry.slot) entry.slot.style.width = layout.width + '%';
+    const width = entry.card.querySelector('[data-layout-output=width]');
+    const height = entry.card.querySelector('[data-layout-output=height]');
+    if (width) width.textContent = layout.width + '%';
+    if (height) height.textContent = layout.height + ' px';
+  }
+
+  readLayout(card) {
+    return this.layout({ layout: {
+      width: Number(card.querySelector('[data-field=layoutWidth]').value),
+      height: Number(card.querySelector('[data-field=layoutHeight]').value),
+      fit: card.querySelector('[data-field=layoutFit]').value,
+    } });
+  }
+
+  previewLayout(event) {
+    if (!event.target.dataset.field?.startsWith('layout')) return;
+    const card = event.target.closest('[data-media-id]');
+    const entry = this.media.find(m => m.card === card);
+    if (entry) this.applyLayout(entry, this.readLayout(card));
+  }
+
+  async saveLayout(entry, piece) {
+    const previous = entry.item.layout;
+    const layout = this.readLayout(entry.card);
+    entry.item.layout = layout;
+    this.applyLayout(entry, layout);
+    try { await putPiece(piece); }
+    catch (error) {
+      if (entry.item.layout === layout) {
+        entry.item.layout = previous;
+        const old = this.layout(entry.item);
+        for (const [field, value] of Object.entries({ layoutWidth: old.width, layoutHeight: old.height, layoutFit: old.fit }))
+          entry.card.querySelector('[data-field=' + field + ']').value = value;
+        this.applyLayout(entry, old);
+      }
+      toast(error.message);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Медиавложения под нотами
   // ---------------------------------------------------------------------------
@@ -324,6 +427,7 @@ class NotaStudio {
       // Под нотами у изображений и видео есть своё место; оно скрыто, пока не наступит время.
       entry.slot = this.createStageSlot(entry);
       if (entry.slot) stage.append(entry.slot);
+      if (entry.type !== 'audio') this.applyLayout(entry);
 
       this.media.push(entry);
     }
@@ -340,6 +444,7 @@ class NotaStudio {
     if (entry.type === 'audio') return null;
 
     const slot = document.createElement('div');
+    slot.dataset.mediaId = entry.item.id;
     slot.className = 'stage-item hidden';
 
     if (entry.type === 'image') {
@@ -400,12 +505,22 @@ class NotaStudio {
         <output>${Math.round(volume * 100)}%</output>
       </label>`;
 
+    const layout = this.layout(item);
+    const sizeControl = type === 'audio' ? '' : `
+      <fieldset class="media-size-controls"><legend>Размер под нотами</legend>
+        <label>Ширина <input type="range" min="20" max="100" step="1" value="${layout.width}" data-field="layoutWidth" aria-label="Ширина ${name}"><output data-layout-output="width">${layout.width}%</output></label>
+        <label>Высота <input type="range" min="80" max="720" step="10" value="${layout.height}" data-field="layoutHeight" aria-label="Высота ${name}"><output data-layout-output="height">${layout.height} px</output></label>
+        <label>Кадрирование <select data-field="layoutFit" aria-label="Кадрирование ${name}"><option value="contain" ${layout.fit === 'contain' ? 'selected' : ''}>Вписать целиком</option><option value="cover" ${layout.fit === 'cover' ? 'selected' : ''}>Заполнить с обрезкой</option></select></label>
+        <button class="text-link" data-media-action="reset-layout">Сбросить размер</button>
+      </fieldset>`;
+
     return `
       <div class="media-preview"></div>
       <div class="media-info">
         <strong>${name}</strong>
         <small>${MEDIA_TYPE_LABELS[type]} · ${this.size(item.size)}</small>
         ${volumeControl}
+        ${sizeControl}
         <div class="media-timing">
           <label><input type="checkbox" data-field="sync" ${item.sync ? 'checked' : ''}> С плеером</label>
           <label>С <input type="number" min="0" step="0.1" data-field="start"
@@ -547,6 +662,12 @@ class NotaStudio {
     const item = piece?.media?.find(m => m.id === card.dataset.mediaId);
     if (!item) return;
 
+    if (field.startsWith('layout')) {
+      const entry = this.media.find(m => m.card === card);
+      if (entry && entry.type !== 'audio') await this.saveLayout(entry, piece);
+      return;
+    }
+
     const previous = { ...item };
     const value = field === 'sync'
       ? event.target.checked
@@ -596,6 +717,16 @@ class NotaStudio {
     const item = piece?.media?.find(m => m.id === card.dataset.mediaId);
     if (!item) return;
 
+    if (action === 'reset-layout') {
+      const entry = this.media.find(m => m.card === card);
+      if (!entry || entry.type === 'audio') return;
+      card.querySelector('[data-field=layoutWidth]').value = 100;
+      card.querySelector('[data-field=layoutHeight]').value = 320;
+      card.querySelector('[data-field=layoutFit]').value = 'contain';
+      await this.saveLayout(entry, piece);
+      return;
+    }
+
     if (action === 'here') {
       // Подставляем текущую позицию нот в поле «С».
       const field = card.querySelector('[data-field="start"]');
@@ -636,6 +767,7 @@ class NotaStudio {
    * @param force     принудительно перемотать, даже если расхождение небольшое
    */
   sync(time, isPlaying, speed = 1, force = false) {
+    this.visual.render(time);
     let stageHasContent = false;
 
     for (const entry of this.media) {

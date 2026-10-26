@@ -46,6 +46,23 @@ test('originals, multiple media, cues and note effects persist and work together
  await page.waitForFunction(()=>document.querySelectorAll('.media-card').length===3);await waitSaved();
  await page.waitForFunction(()=>document.querySelector('.media-card img').naturalWidth>0&&document.querySelector('audio').readyState>0&&document.querySelector('video').readyState>0);
  const audioCard=page.locator('.media-card').filter({has:page.locator('audio')}),videoCard=page.locator('.media-card').filter({hasText:'performance.webm'}); // видео может уехать под ноты, ищем карточку по имени
+ const imageCard=page.locator('.media-card').filter({hasText:'cover.png'});
+ async function resize(card,width,height,fit){
+  for(const [field,value] of Object.entries({layoutWidth:width,layoutHeight:height,layoutFit:fit}))
+   await card.locator('[data-field='+field+']').evaluate((el,value)=>{el.value=String(value);el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))},value);
+  await waitSaved();
+ }
+ await resize(videoCard,60,180,'cover');await resize(imageCard,40,220,'contain');
+ assert.equal(await audioCard.locator('.media-size-controls').count(),0);
+ await imageCard.locator('[data-field=sync]').check();await waitSaved();
+ const imageId=await imageCard.getAttribute('data-media-id');
+ const imageStage=page.locator('#scoreMedia [data-media-id="'+imageId+'"] img');
+ assert.equal(await imageStage.evaluate(el=>getComputedStyle(el).height),'220px');
+ assert.equal(await imageStage.evaluate(el=>getComputedStyle(el).objectFit),'contain');
+ const widthRatio=await imageStage.evaluate(el=>el.getBoundingClientRect().width/(el.closest('#scoreMedia').clientWidth-parseFloat(getComputedStyle(el.closest('#scoreMedia')).paddingLeft)-parseFloat(getComputedStyle(el.closest('#scoreMedia')).paddingRight)));
+ assert.ok(Math.abs(widthRatio-.4)<.01);
+ await imageCard.locator('[data-field=sync]').uncheck();await waitSaved();
+
  const layout=await page.evaluate(()=>{const score=document.querySelector('.score-shell').getBoundingClientRect(),media=document.querySelector('[aria-labelledby=mediaTitle]').getBoundingClientRect(),player=document.querySelector('.player').getBoundingClientRect();return score.bottom<=media.top&&media.bottom<=player.top});assert.equal(layout,true);
  assert.equal(await page.locator('#scoreMedia').isHidden(),true); // без привязки к плееру под нотами ничего нет
  assert.equal(await page.locator('.media-card').filter({has:page.locator('img')}).locator('[data-field=volume]').count(),0);
@@ -59,6 +76,7 @@ test('originals, multiple media, cues and note effects persist and work together
  await audioCard.locator('[data-field=sync]').check();await videoCard.locator('[data-field=sync]').check();await waitSaved();
  await page.locator('#playBtn').click();await page.waitForFunction(()=>playing&&currentPosition()>.65&&!document.querySelector('.media-card audio').paused&&!document.querySelector('video').paused);
  assert.equal(await page.locator('#scoreMedia video').count(),1); // привязанное видео показано под нотами
+ assert.equal(await page.locator('#scoreMedia video').evaluate(el=>getComputedStyle(el).height),'180px');assert.equal(await page.locator('#scoreMedia video').evaluate(el=>getComputedStyle(el).objectFit),'cover');
  assert.equal(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).fill),'rgb(0, 255, 170)');
  assert.equal(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).animationName),'note-pulse');
  assert.match(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).filter),/drop-shadow/);
@@ -77,6 +95,8 @@ test('originals, multiple media, cues and note effects persist and work together
  assert.match(await page.locator('#uploadedFiles').textContent(),/studio.musicxml/);
  await page.reload();await page.waitForFunction(()=>songs.length===6);await page.locator('#recentGrid [data-open="'+id+'"]').first().click();await page.waitForSelector('#score svg');
  assert.equal(await page.locator('.media-card').count(),3);
+ assert.equal(await videoCard.locator('[data-field=layoutWidth]').inputValue(),'60');assert.equal(await videoCard.locator('[data-field=layoutHeight]').inputValue(),'180');assert.equal(await videoCard.locator('[data-field=layoutFit]').inputValue(),'cover');
+ await videoCard.locator('[data-media-action=reset-layout]').click();await waitSaved();assert.equal(await videoCard.locator('[data-field=layoutWidth]').inputValue(),'100');assert.equal(await videoCard.locator('[data-field=layoutHeight]').inputValue(),'320');
  assert.equal(await audioCard.locator('[data-field=volume]').inputValue(),'0');assert.equal(await page.locator('audio').evaluate(el=>el.volume),0);
  assert.equal(await videoCard.locator('[data-field=volume]').inputValue(),'0.7');assert.equal(await page.locator('video').evaluate(el=>el.volume),.7);
  await page.locator('video').evaluate(el=>el.volume=.25);await page.waitForFunction(()=>[...document.querySelectorAll('.media-card')].find(c=>c.textContent.includes('performance.webm')).querySelector('[data-field=volume]').value==='0.25');await waitSaved();
