@@ -1,177 +1,764 @@
 'use strict';
 
+/*
+ * NotaStudio — всё, что связано с файлами произведения:
+ *   - обмен с сервером (хранилище в папке data);
+ *   - список загруженных нот в разделе «Мои файлы»;
+ *   - медиавложения (аудио, видео, картинки) под нотами и их синхронизация с плеером;
+ *   - эффекты звучащих нот (цвет, свечение, пульсация).
+ *
+ * Зависит от глобальных функций и переменных из app.js:
+ * $, esc, toast, modal, putPiece, removePiece, getAll, songs, activeId, view,
+ * playing, playSpeed, currentPosition(), openDB(), STORE.
+ */
+
+const MAX_MEDIA_SIZE = 100 * 1024 * 1024; // 100 МБ на файл
+const MEDIA_EXTENSIONS = /\.(mp3|wav|ogg|flac|m4a|mp4|webm|mov|png|jpe?g|webp|gif)$/i;
+const DEFAULT_NOTE_COLOR = '#8b4ce8';
+
+const MEDIA_TYPE_LABELS = { image: 'Изображение', video: 'Видео', audio: 'Аудио' };
+
 class NotaStudio {
- constructor(){this.online=false;this.urls=[];this.media=[];this.saving=Promise.resolve();this.lastPiece=null}
- async request(path,options={}){
-  const response=await fetch(path,options);
-  if(!response.ok){let message='Не удалось выполнить запрос.';try{message=(await response.json()).error||message}catch{}throw Error(message)}
-  return response.json();
- }
- async init(){
-  try{const status=await this.request('/api/status');this.online=status.storage==='folder'}catch{this.online=false}
-  $('#storageNotice').textContent=this.online?'Хранилище: папка data · оригиналы нот и медиа сохраняются отдельно от сайта':'Хранилище: этот браузер · для сохранения в папку data запустите python3 server.py';
-  $('#storageDescription').textContent=this.online?'Файлы находятся в data/uploads на компьютере или сервере, где запущен сайт. Скачайте оригинал или откройте произведение.':'Сейчас данные находятся в IndexedDB этого браузера. Запустите python3 server.py, чтобы хранить оригиналы и медиа в отдельной папке data.';
-  $('#importBrowser').hidden=!this.online;
-  $('#filesUpload').onclick=()=>modal(true);
-  $('#importBrowser').onclick=()=>this.importBrowser();
-  $('#mediaInput').onchange=e=>this.addMedia(e.target.files);
-  for(const id of ['noteColor','noteGlow','notePulse'])$('#'+id).addEventListener('change',()=>this.saveEffects());
-  $('#resetEffects').onclick=()=>{this.applyEffects({});this.saveEffects()};
-  $('#mediaList').addEventListener('input',e=>this.previewVolume(e));
-  $('#mediaList').addEventListener('change',e=>this.changeMedia(e));
-  $('#mediaList').addEventListener('click',e=>this.mediaClick(e));
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)this.sync(currentPosition(),playing,playSpeed,true)});
- }
- save(piece){
-  // Serialize writes so rapid settings changes cannot overwrite newer state.
-  const {midiData,...document}=piece;
-  const body=JSON.stringify(document);
-  const pending=this.saving.catch(()=>{}).then(()=>this.request('/api/pieces/'+encodeURIComponent(piece.id),{method:'PUT',headers:{'Content-Type':'application/json'},body}));
-  this.saving=pending;return pending;
- }
- async upload(pieceId,file){return this.request('/api/pieces/'+encodeURIComponent(pieceId)+'/files?name='+encodeURIComponent(file.name),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file})}
- async create(piece,file){
-  await putPiece(piece);
-  if(!this.online)return;
-  try{piece.originalFile=await this.upload(piece.id,file);await putPiece(piece)}
-  catch(error){await removePiece(piece.id);throw error}
- }
- renderFiles(){
-  const uploaded=songs.filter(p=>!p.demo);
-  $('#filesSummary').textContent=`Загружено произведений: ${uploaded.length} · Медиафайлов: ${uploaded.reduce((n,p)=>n+(p.media?.length||0),0)}`;
-  $('#uploadedFiles').innerHTML=uploaded.length?uploaded.map(p=>{
-   const original=p.originalFile;return `<article class="file-row"><div><strong>${esc(p.title)}</strong><small>${esc(original?.name||'Оригинал не сохранён · можно скачать MusicXML')} · ${esc(p.kind.toUpperCase())}${original?' · '+this.size(original.size):''}</small><small>Медиа: ${p.media?.length||0}${this.online?' · data/uploads/'+esc(p.id):' · этот браузер'}</small></div><div class="file-actions"><button class="btn" data-open="${esc(p.id)}">Открыть ноты</button><button class="text-link" data-download-piece="${esc(p.id)}">Скачать ${original?'оригинал':'MusicXML'}</button></div></article>`;
-  }).join(''):'<div class="empty-state"><strong>Здесь будут ваши загруженные ноты</strong><p>Демонстрационные произведения остаются в библиотеке.</p></div>';
-  $('#uploadedFiles').querySelectorAll('[data-download-piece]').forEach(button=>button.onclick=()=>this.downloadPiece(button.dataset.downloadPiece));
- }
- size(n){return n<1048576?(n/1024).toFixed(1)+' КБ':(n/1048576).toFixed(1)+' МБ'}
- download(url,name){const link=document.createElement('a');link.href=url;link.download=name;document.body.append(link);link.click();link.remove()}
- downloadPiece(id){const piece=songs.find(p=>p.id===id);if(!piece)return;
-  if(piece.originalFile&&this.online){this.download(piece.originalFile.url+'?download=1',piece.originalFile.name);return}
-  const url=URL.createObjectURL(new Blob([piece.xml],{type:'application/vnd.recordare.musicxml+xml'}));this.download(url,piece.title+'.musicxml');setTimeout(()=>URL.revokeObjectURL(url),1000);
- }
- close(){for(const item of this.media)item.el?.pause?.();for(const url of this.urls)URL.revokeObjectURL(url);this.media=[];this.urls=[];this.lastPiece=null}
- async open(piece){this.close();this.lastPiece=piece.id;this.applyEffects(piece.effects||{});this.renderMedia(piece)}
- applyEffects(effects){
-  const color=/^#[0-9a-f]{6}$/i.test(effects.color||'')?effects.color:'#8b4ce8';
-  $('#noteColor').value=color;$('#noteGlow').checked=effects.glow!==false;$('#notePulse').checked=!!effects.pulse;
-  $('#score').style.setProperty('--note-color',color);$('#score').classList.toggle('effect-glow',effects.glow!==false);$('#score').classList.toggle('effect-pulse',!!effects.pulse);
- }
- async saveEffects(){
-  const piece=songs.find(p=>p.id===activeId);if(!piece)return;
-  const previous=piece.effects;
-  const effects={color:$('#noteColor').value,glow:$('#noteGlow').checked,pulse:$('#notePulse').checked};
-  piece.effects=effects;this.applyEffects(effects);
-  try{await putPiece(piece)}catch(error){if(piece.effects===effects){piece.effects=previous;this.applyEffects(previous||{})}toast(error.message)}
- }
- renderMedia(piece){
-  for(const item of this.media)item.el?.pause?.();this.media=[];
-  $('#mediaInput').disabled=!this.online;
-  $('#mediaStatus').textContent=this.online?'Файлы сохраняются в data/uploads/'+piece.id:'Для добавления медиа запустите python3 server.py. Ноты из браузера можно перенести в разделе «Мои файлы».';
-  const list=$('#mediaList');list.replaceChildren();
-  for(const item of piece.media||[]){
-   const card=document.createElement('article');card.className='media-card';card.dataset.mediaId=item.id;
-   const type=item.type.startsWith('image/')?'image':item.type.startsWith('video/')?'video':'audio';
-   // Media URLs always point to our own file endpoint, never to arbitrary HTML.
-   const url='/api/files/'+encodeURIComponent(item.id);
-   const volume=this.volume(item);
-   card.innerHTML=`<div class="media-preview"></div><div class="media-info"><strong>${esc(item.name)}</strong><small>${type==='image'?'Изображение':type==='video'?'Видео':'Аудио'} · ${this.size(item.size)}</small>${type==='image'?'':`<label class="media-volume">Громкость <input type="range" min="0" max="1" step="0.01" value="${volume}" data-field="volume" aria-label="Громкость ${esc(item.name)}"><output>${Math.round(volume*100)}%</output></label>`}<div class="media-timing"><label><input type="checkbox" data-field="sync" ${item.sync?'checked':''}> С плеером</label><label>С <input type="number" min="0" step="0.1" data-field="start" value="${Number(item.start)||0}" aria-label="Начало ${esc(item.name)}"> сек</label><label>До <input type="number" min="0" step="0.1" data-field="end" value="${Number(item.end)||''}" placeholder="конца" aria-label="Конец ${esc(item.name)}"> сек</label></div><div class="media-actions"><button class="text-link" data-media-action="here">Начать отсюда</button><a class="text-link" href="${url}?download=1" download>Скачать</a><button class="text-link danger" data-media-action="delete">Удалить</button></div><p class="media-error" role="status"></p></div>`;
-   let el;
-   if(type==='image'){el=document.createElement('img');el.alt=item.name;el.loading='lazy'}
-   else{el=document.createElement(type);el.controls=true;el.preload='metadata';el.playsInline=true;el.addEventListener('loadedmetadata',()=>this.sync(currentPosition(),playing,playSpeed,true));el.addEventListener('error',()=>card.querySelector('.media-error').textContent='Браузер не смог открыть этот формат. Можно скачать файл и открыть его отдельно.')}
-   if(type!=='image'){el.volume=volume;el.addEventListener('volumechange',()=>{
-    const entry=this.media.find(m=>m.el===el);if(!entry||!card.isConnected||entry.previewVolume)return;
-    const range=card.querySelector('[data-field=volume]');range.value=el.volume;card.querySelector('.media-volume output').textContent=Math.round(el.volume*100)+'%';
-    if(el.volume!==this.volume(item))this.changeMedia({target:range});
-   })}
-   if(type!=='image')el.addEventListener('play',()=>{const entry=this.media.find(m=>m.el===el);if(entry){entry.blocked=false;card.querySelector('.media-error').textContent=''}});
-   el.src=url;card.querySelector('.media-preview').append(el);list.append(card);
-   this.media.push({item,el,card,type,pending:false});
+  constructor() {
+    this.online = false;          // true, если работает server.py и файлы лежат в папке data
+    this.urls = [];               // временные blob-ссылки, которые нужно освободить
+    this.media = [];              // отрисованные вложения: { item, el, card, type, ... }
+    this.saving = Promise.resolve(); // очередь записи, чтобы быстрые правки не затирали друг друга
+    this.lastPiece = null;
   }
-  if(!this.media.length)list.innerHTML='<div class="media-empty">Пока нет вложений. Добавьте видео исполнения, аудиозапись или иллюстрации.</div>';
-  this.sync(currentPosition(),playing,playSpeed,true);
- }
- async addMedia(files){
-  const piece=songs.find(p=>p.id===activeId);if(!piece||!this.online)return;
-  const input=$('#mediaInput');input.disabled=true;const problems=[];
-  for(const file of files){
-   let uploaded;
-   try{
-    if(!/\.(mp3|wav|ogg|flac|m4a|mp4|webm|mov|png|jpe?g|webp|gif)$/i.test(file.name))throw Error('Неподдерживаемый формат');
-    if(file.size>100*1024*1024)throw Error('Максимум 100 МБ');
-    $('#mediaStatus').textContent='Сохраняется: '+file.name;
-    uploaded=await this.upload(piece.id,file);
-    const item={...uploaded,start:0,end:null,sync:false,volume:1};piece.media=[...(piece.media||[]),item];
-    try{await putPiece(piece)}catch(error){piece.media=piece.media.filter(m=>m.id!==item.id);throw error}
-   }catch(error){if(uploaded)await this.request('/api/files/'+uploaded.id,{method:'DELETE'}).catch(()=>{});problems.push(file.name+': '+error.message)}
+
+  // ---------------------------------------------------------------------------
+  // Связь с сервером
+  // ---------------------------------------------------------------------------
+
+  async request(path, options = {}) {
+    const response = await fetch(path, options);
+
+    if (!response.ok) {
+      let message = 'Не удалось выполнить запрос.';
+      try {
+        message = (await response.json()).error || message;
+      } catch {
+        // Тело ответа не JSON — остаётся стандартное сообщение.
+      }
+      throw Error(message);
+    }
+
+    return response.json();
   }
-  input.value='';input.disabled=false;
-  if(activeId===piece.id&&view==='reader')this.renderMedia(piece);this.renderFiles();
-  if(problems.length)toast(problems.join('; '));
- }
- volume(item){return Number.isFinite(item.volume)?Math.max(0,Math.min(1,item.volume)):1}
- previewVolume(event){
-  if(event.target.dataset.field!=='volume')return;
-  const card=event.target.closest('[data-media-id]'),entry=this.media.find(m=>m.card===card);if(!entry)return;
-  const volume=Number(event.target.value);if(!Number.isFinite(volume))return;
-  entry.previewVolume=true;entry.el.volume=Math.max(0,Math.min(1,volume));entry.el.muted=false;
-  card.querySelector('.media-volume output').textContent=Math.round(entry.el.volume*100)+'%';
- }
- async changeMedia(event){
-  const field=event.target.dataset.field,card=event.target.closest('[data-media-id]');if(!field||!card)return;
-  const piece=songs.find(p=>p.id===activeId),item=piece?.media?.find(m=>m.id===card.dataset.mediaId);if(!item)return;
-  const previous={...item};const value=field==='sync'?event.target.checked:event.target.value===''?null:Number(event.target.value);
-  if(field==='volume'){
-   if(!Number.isFinite(value)||value<0||value>1)return;
-   const entry=this.media.find(m=>m.card===card);if(entry){entry.previewVolume=false;entry.el.volume=value;entry.el.muted=false;card.querySelector('.media-volume output').textContent=Math.round(value*100)+'%'}
+
+  async init() {
+    await this.detectStorage();
+    this.showStorageInfo();
+    this.bindEvents();
   }
-  item[field]=value;
-  if((field!=='sync'&&value!==null&&(!Number.isFinite(value)||value<0))||(item.end!==null&&Number(item.end)<=Number(item.start))){Object.assign(item,previous);event.target.value=previous[field]??'';toast('Конец должен быть позже начала; время не может быть отрицательным.');return}
-  try{await putPiece(piece);if(field!=='volume')this.sync(currentPosition(),playing,playSpeed,true)}catch(error){Object.assign(item,previous);this.renderMedia(piece);toast(error.message)}
- }
- async mediaClick(event){
-  const action=event.target.dataset.mediaAction,card=event.target.closest('[data-media-id]');if(!action||!card)return;
-  const piece=songs.find(p=>p.id===activeId),item=piece?.media?.find(m=>m.id===card.dataset.mediaId);if(!item)return;
-  if(action==='here'){
-   const field=card.querySelector('[data-field="start"]');field.value=currentPosition().toFixed(1);field.dispatchEvent(new Event('change',{bubbles:true}));return;
+
+  /** Спрашиваем сервер, где хранятся данные: в папке data или только в браузере. */
+  async detectStorage() {
+    try {
+      const status = await this.request('/api/status');
+      this.online = status.storage === 'folder';
+    } catch {
+      this.online = false;
+    }
   }
-  if(action==='delete'){
-   if(!confirm('Удалить вложение «'+item.name+'»?'))return;
-   const previous=piece.media;piece.media=piece.media.filter(m=>m.id!==item.id);
-   try{await putPiece(piece);await this.request('/api/files/'+item.id,{method:'DELETE'});this.renderMedia(piece);this.renderFiles()}catch(error){piece.media=previous;await putPiece(piece).catch(()=>{});this.renderMedia(piece);toast(error.message)}
+
+  showStorageInfo() {
+    $('#storageNotice').textContent = this.online
+      ? 'Хранилище: папка data · оригиналы нот и медиа сохраняются отдельно от сайта'
+      : 'Хранилище: этот браузер · для сохранения в папку data запустите python3 server.py';
+
+    $('#storageDescription').textContent = this.online
+      ? 'Файлы находятся в data/uploads на компьютере или сервере, где запущен сайт. Скачайте оригинал или откройте произведение.'
+      : 'Сейчас данные находятся в IndexedDB этого браузера. Запустите python3 server.py, чтобы хранить оригиналы и медиа в отдельной папке data.';
+
+    $('#importBrowser').hidden = !this.online;
   }
- }
- sync(time,isPlaying,speed=1,force=false){
-  for(const entry of this.media){
-   const {item,el,card,type}=entry;
-   const active=time>=Number(item.start||0)&&(item.end==null||time<Number(item.end));
-   card.classList.toggle('media-active',!!item.sync&&active);
-   card.classList.toggle('media-outside',!!item.sync&&!active);
-   if(type==='image')continue;
-   if(!item.sync){if(entry.wasSync){el.pause();entry.wasSync=false}continue}
-   entry.wasSync=true;
-   const target=Math.max(0,(time-Number(item.start||0)));
-   const seekTarget=Number.isFinite(el.duration)?Math.min(target,el.duration):target;
-   const ended=Number.isFinite(el.duration)&&target>=el.duration;
-   if(!active||!isPlaying||ended)el.pause();
-   if(el.readyState&&((force||!isPlaying)&&Math.abs(el.currentTime-seekTarget)>.05||Math.abs(el.currentTime-seekTarget)>.35)){
-    try{el.currentTime=seekTarget}catch{}
-   }
-   if(el.playbackRate!==speed)el.playbackRate=speed;
-   if(active&&isPlaying&&!ended&&el.paused&&!entry.pending&&!entry.blocked){
-    entry.pending=true;el.play().catch(error=>{if(error.name!=='AbortError'){entry.blocked=true;card.querySelector('.media-error').textContent='Нажмите ▶ на медиа, чтобы разрешить воспроизведение.'}}).finally(()=>{entry.pending=false;if(!playing||!item.sync||!card.isConnected)el.pause()});
-   }
+
+  bindEvents() {
+    $('#filesUpload').onclick = () => modal(true);
+    $('#importBrowser').onclick = () => this.importBrowser();
+    $('#mediaInput').onchange = event => this.addMedia(event.target.files);
+
+    // Эффекты нот сохраняются при любом изменении настроек.
+    for (const id of ['noteColor', 'noteGlow', 'notePulse']) {
+      $('#' + id).addEventListener('change', () => this.saveEffects());
+    }
+    $('#resetEffects').onclick = () => {
+      this.applyEffects({});
+      this.saveEffects();
+    };
+
+    // Один набор обработчиков на весь список вложений (делегирование событий).
+    const list = $('#mediaList');
+    list.addEventListener('input', event => this.previewVolume(event));
+    list.addEventListener('change', event => this.changeMedia(event));
+    list.addEventListener('click', event => this.mediaClick(event));
+
+    // Когда пользователь возвращается на вкладку, подтягиваем медиа к позиции нот.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) this.sync(currentPosition(), playing, playSpeed, true);
+    });
   }
- }
- async importBrowser(){
-  const button=$('#importBrowser');button.disabled=true;
-  try{
-   const db=await openDB();const pieces=await new Promise((resolve,reject)=>{const tx=db.transaction(STORE);const r=tx.objectStore(STORE).getAll();r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);tx.oncomplete=()=>db.close()});
-   const existing=new Set(songs.map(p=>p.id));let count=0;
-   for(const piece of pieces){if(existing.has(piece.id))continue;
-    if(!piece.demo){const original=piece.midiData?new File([piece.midiData],piece.title+'.mid'):new File([piece.xml],piece.title+'.musicxml');await this.create(piece,original)}else await this.save(piece);count++;
-   }
-   songs=await getAll();render();toast('Перенесено произведений: '+count+'. Исходная библиотека браузера сохранена.');
-  }catch(error){toast(error.message)}finally{button.disabled=false}
- }
+
+  // ---------------------------------------------------------------------------
+  // Сохранение произведений и файлов
+  // ---------------------------------------------------------------------------
+
+  /** Сохраняет произведение на сервере. Записи идут строго по очереди. */
+  save(piece) {
+    // MIDI-байты хранятся отдельным файлом и в JSON-документ не попадают.
+    const { midiData, ...document } = piece;
+    const body = JSON.stringify(document);
+    const url = '/api/pieces/' + encodeURIComponent(piece.id);
+
+    const pending = this.saving
+      .catch(() => {}) // ошибка прошлой записи не должна блокировать следующую
+      .then(() => this.request(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      }));
+
+    this.saving = pending;
+    return pending;
+  }
+
+  /** Загружает файл (оригинал нот или медиа) в папку произведения. */
+  upload(pieceId, file) {
+    const url = '/api/pieces/' + encodeURIComponent(pieceId) + '/files?name=' + encodeURIComponent(file.name);
+    return this.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+  }
+
+  /** Создаёт новое произведение вместе с оригиналом файла. */
+  async create(piece, file) {
+    await putPiece(piece);
+    if (!this.online) return;
+
+    try {
+      piece.originalFile = await this.upload(piece.id, file);
+      await putPiece(piece);
+    } catch (error) {
+      // Без оригинала произведение не оставляем.
+      await removePiece(piece.id);
+      throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Раздел «Мои файлы»
+  // ---------------------------------------------------------------------------
+
+  renderFiles() {
+    const uploaded = songs.filter(piece => !piece.demo);
+    const mediaCount = uploaded.reduce((sum, piece) => sum + (piece.media?.length || 0), 0);
+
+    $('#filesSummary').textContent =
+      `Загружено произведений: ${uploaded.length} · Медиафайлов: ${mediaCount}`;
+
+    $('#uploadedFiles').innerHTML = uploaded.length
+      ? uploaded.map(piece => this.fileRowHtml(piece)).join('')
+      : `<div class="empty-state">
+           <strong>Здесь будут ваши загруженные ноты</strong>
+           <p>Демонстрационные произведения остаются в библиотеке.</p>
+         </div>`;
+
+    $('#uploadedFiles').querySelectorAll('[data-download-piece]').forEach(button => {
+      button.onclick = () => this.downloadPiece(button.dataset.downloadPiece);
+    });
+  }
+
+  fileRowHtml(piece) {
+    const original = piece.originalFile;
+    const originalName = original?.name || 'Оригинал не сохранён · можно скачать MusicXML';
+    const originalSize = original ? ' · ' + this.size(original.size) : '';
+    const location = this.online ? ' · data/uploads/' + esc(piece.id) : ' · этот браузер';
+
+    return `
+      <article class="file-row">
+        <div>
+          <strong>${esc(piece.title)}</strong>
+          <small>${esc(originalName)} · ${esc(piece.kind.toUpperCase())}${originalSize}</small>
+          <small>Медиа: ${piece.media?.length || 0}${location}</small>
+        </div>
+        <div class="file-actions">
+          <button class="btn" data-open="${esc(piece.id)}">Открыть ноты</button>
+          <button class="text-link" data-download-piece="${esc(piece.id)}">Скачать ${original ? 'оригинал' : 'MusicXML'}</button>
+        </div>
+      </article>`;
+  }
+
+  /** Человекочитаемый размер файла. */
+  size(bytes) {
+    return bytes < 1048576
+      ? (bytes / 1024).toFixed(1) + ' КБ'
+      : (bytes / 1048576).toFixed(1) + ' МБ';
+  }
+
+  download(url, name) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  downloadPiece(id) {
+    const piece = songs.find(p => p.id === id);
+    if (!piece) return;
+
+    // Есть оригинал на сервере — отдаём его без изменений.
+    if (piece.originalFile && this.online) {
+      this.download(piece.originalFile.url + '?download=1', piece.originalFile.name);
+      return;
+    }
+
+    // Иначе отдаём MusicXML, который хранится в браузере.
+    const blob = new Blob([piece.xml], { type: 'application/vnd.recordare.musicxml+xml' });
+    const url = URL.createObjectURL(blob);
+    this.download(url, piece.title + '.musicxml');
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Открытие и закрытие произведения
+  // ---------------------------------------------------------------------------
+
+  async open(piece) {
+    this.close();
+    this.lastPiece = piece.id;
+    this.applyEffects(piece.effects || {});
+    this.renderMedia(piece);
+  }
+
+  /** Останавливает все вложения и освобождает ресурсы. */
+  close() {
+    for (const entry of this.media) entry.el?.pause?.();
+    for (const url of this.urls) URL.revokeObjectURL(url);
+
+    this.media = [];
+    this.urls = [];
+    this.lastPiece = null;
+    $('#scoreMedia').classList.add('hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Эффекты нот
+  // ---------------------------------------------------------------------------
+
+  applyEffects(effects) {
+    const color = /^#[0-9a-f]{6}$/i.test(effects.color || '') ? effects.color : DEFAULT_NOTE_COLOR;
+    const glow = effects.glow !== false; // свечение включено по умолчанию
+    const pulse = !!effects.pulse;
+
+    $('#noteColor').value = color;
+    $('#noteGlow').checked = glow;
+    $('#notePulse').checked = pulse;
+
+    const score = $('#score');
+    score.style.setProperty('--note-color', color);
+    score.classList.toggle('effect-glow', glow);
+    score.classList.toggle('effect-pulse', pulse);
+  }
+
+  async saveEffects() {
+    const piece = songs.find(p => p.id === activeId);
+    if (!piece) return;
+
+    const previous = piece.effects;
+    const effects = {
+      color: $('#noteColor').value,
+      glow: $('#noteGlow').checked,
+      pulse: $('#notePulse').checked,
+    };
+
+    piece.effects = effects;
+    this.applyEffects(effects);
+
+    try {
+      await putPiece(piece);
+    } catch (error) {
+      // Откатываем, только если за это время настройки не успели измениться снова.
+      if (piece.effects === effects) {
+        piece.effects = previous;
+        this.applyEffects(previous || {});
+      }
+      toast(error.message);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Медиавложения под нотами
+  // ---------------------------------------------------------------------------
+
+  /** Определяет тип вложения по MIME: image, video или audio. */
+  mediaType(item) {
+    if (item.type.startsWith('image/')) return 'image';
+    if (item.type.startsWith('video/')) return 'video';
+    return 'audio';
+  }
+
+  renderMedia(piece) {
+    for (const entry of this.media) entry.el?.pause?.();
+    this.media = [];
+
+    $('#mediaInput').disabled = !this.online;
+    $('#mediaStatus').textContent = this.online
+      ? 'Файлы сохраняются в data/uploads/' + piece.id
+      : 'Для добавления медиа запустите python3 server.py. Ноты из браузера можно перенести в разделе «Мои файлы».';
+
+    const list = $('#mediaList');
+    const stage = $('#scoreMedia');
+    list.replaceChildren();
+    stage.replaceChildren();
+
+    for (const item of piece.media || []) {
+      const entry = this.createMediaCard(item);
+      list.append(entry.card);
+
+      // Под нотами у изображений и видео есть своё место; оно скрыто, пока не наступит время.
+      entry.slot = this.createStageSlot(entry);
+      if (entry.slot) stage.append(entry.slot);
+
+      this.media.push(entry);
+    }
+
+    // Показ медиа под нотами решает sync(): видно только то, что активно сейчас.
+    this.sync(currentPosition(), playing, playSpeed, true);
+  }
+
+  /**
+   * Место под нотами для изображения или видео. Сначала скрыто.
+   * Изображению хватает собственной копии, а видео переезжает сюда из карточки (см. placeInStage).
+   */
+  createStageSlot(entry) {
+    if (entry.type === 'audio') return null;
+
+    const slot = document.createElement('div');
+    slot.className = 'stage-item hidden';
+
+    if (entry.type === 'image') {
+      const img = document.createElement('img');
+      img.alt = entry.item.name;
+      img.src = '/api/files/' + encodeURIComponent(entry.item.id);
+      slot.append(img);
+    }
+    return slot;
+  }
+
+  /**
+   * Показывает или прячет вложение под нотами.
+   * Видео — один и тот же элемент: пока не его время, он лежит в карточке «Добавленных файлов»,
+   * на своём отрезке переезжает под ноты. Переезд происходит на паузе, поэтому звук не прерывается.
+   */
+  placeInStage(entry, show) {
+    const { slot, el, card, type } = entry;
+    if (!slot) return;
+
+    slot.classList.toggle('hidden', !show);
+    if (type !== 'video') return;
+
+    if (show && el.parentNode !== slot) {
+      slot.append(el);
+    } else if (!show && el.parentNode === slot) {
+      el.pause();
+      card.querySelector('.media-preview').append(el);
+    }
+  }
+
+  /** Собирает карточку одного вложения и возвращает запись для this.media. */
+  createMediaCard(item) {
+    const type = this.mediaType(item);
+    const volume = this.volume(item);
+    // Ссылки всегда ведут на наш файловый эндпоинт, а не на произвольные адреса.
+    const url = '/api/files/' + encodeURIComponent(item.id);
+
+    const card = document.createElement('article');
+    card.className = 'media-card media-' + type;
+    card.dataset.mediaId = item.id;
+    card.innerHTML = this.mediaCardHtml(item, type, volume, url);
+
+    const el = this.createMediaElement(item, type, card, volume);
+    el.src = url;
+    card.querySelector('.media-preview').append(el);
+
+    return { item, el, card, type, pending: false };
+  }
+
+  mediaCardHtml(item, type, volume, url) {
+    const name = esc(item.name);
+
+    const volumeControl = type === 'image' ? '' : `
+      <label class="media-volume">Громкость
+        <input type="range" min="0" max="1" step="0.01" value="${volume}"
+               data-field="volume" aria-label="Громкость ${name}">
+        <output>${Math.round(volume * 100)}%</output>
+      </label>`;
+
+    return `
+      <div class="media-preview"></div>
+      <div class="media-info">
+        <strong>${name}</strong>
+        <small>${MEDIA_TYPE_LABELS[type]} · ${this.size(item.size)}</small>
+        ${volumeControl}
+        <div class="media-timing">
+          <label><input type="checkbox" data-field="sync" ${item.sync ? 'checked' : ''}> С плеером</label>
+          <label>С <input type="number" min="0" step="0.1" data-field="start"
+                          value="${Number(item.start) || 0}" aria-label="Начало ${name}"> сек</label>
+          <label>До <input type="number" min="0" step="0.1" data-field="end"
+                           value="${Number(item.end) || ''}" placeholder="конца"
+                           aria-label="Конец ${name}"> сек</label>
+        </div>
+        <div class="media-actions">
+          <button class="text-link" data-media-action="here">Начать отсюда</button>
+          <a class="text-link" href="${url}?download=1" download>Скачать</a>
+          <button class="text-link danger" data-media-action="delete">Удалить</button>
+        </div>
+        <p class="media-error" role="status"></p>
+      </div>`;
+  }
+
+  /** Создаёт <img>, <video> или <audio> и подключает к нему обработчики. */
+  createMediaElement(item, type, card, volume) {
+    const errorLabel = card.querySelector('.media-error');
+
+    if (type === 'image') {
+      const img = document.createElement('img');
+      img.alt = item.name;
+      img.loading = 'lazy';
+      return img;
+    }
+
+    const el = document.createElement(type);
+    el.controls = true;
+    el.preload = 'metadata';
+    el.playsInline = true;
+    el.volume = volume;
+
+    el.addEventListener('loadedmetadata', () => {
+      this.sync(currentPosition(), playing, playSpeed, true);
+    });
+
+    el.addEventListener('error', () => {
+      errorLabel.textContent = 'Браузер не смог открыть этот формат. Можно скачать файл и открыть его отдельно.';
+    });
+
+    // Пользователь сам нажал play — снимаем блокировку автозапуска.
+    el.addEventListener('play', () => {
+      const entry = this.media.find(m => m.el === el);
+      if (!entry) return;
+      entry.blocked = false;
+      errorLabel.textContent = '';
+    });
+
+    // Громкость поменяли штатным регулятором плеера — отражаем это в нашем ползунке.
+    el.addEventListener('volumechange', () => {
+      const entry = this.media.find(m => m.el === el);
+      if (!entry || !card.isConnected || entry.previewVolume) return;
+
+      const range = card.querySelector('[data-field=volume]');
+      range.value = el.volume;
+      card.querySelector('.media-volume output').textContent = Math.round(el.volume * 100) + '%';
+
+      if (el.volume !== this.volume(item)) this.changeMedia({ target: range });
+    });
+
+    return el;
+  }
+
+  async addMedia(files) {
+    const piece = songs.find(p => p.id === activeId);
+    if (!piece || !this.online) return;
+
+    const input = $('#mediaInput');
+    input.disabled = true;
+    const problems = [];
+
+    for (const file of files) {
+      let uploaded;
+      try {
+        if (!MEDIA_EXTENSIONS.test(file.name)) throw Error('Неподдерживаемый формат');
+        if (file.size > MAX_MEDIA_SIZE) throw Error('Максимум 100 МБ');
+
+        $('#mediaStatus').textContent = 'Сохраняется: ' + file.name;
+        uploaded = await this.upload(piece.id, file);
+
+        const item = { ...uploaded, start: 0, end: null, sync: false, volume: 1 };
+        piece.media = [...(piece.media || []), item];
+
+        try {
+          await putPiece(piece);
+        } catch (error) {
+          piece.media = piece.media.filter(m => m.id !== item.id);
+          throw error;
+        }
+      } catch (error) {
+        // Файл не удалось записать в произведение — убираем его и с сервера.
+        if (uploaded) {
+          await this.request('/api/files/' + uploaded.id, { method: 'DELETE' }).catch(() => {});
+        }
+        problems.push(file.name + ': ' + error.message);
+      }
+    }
+
+    input.value = '';
+    input.disabled = false;
+
+    if (activeId === piece.id && view === 'reader') this.renderMedia(piece);
+    this.renderFiles();
+
+    if (problems.length) toast(problems.join('; '));
+  }
+
+  /** Громкость вложения в пределах от 0 до 1. */
+  volume(item) {
+    return Number.isFinite(item.volume) ? Math.max(0, Math.min(1, item.volume)) : 1;
+  }
+
+  /** Пока ползунок громкости двигают, меняем звук сразу, но ещё не сохраняем. */
+  previewVolume(event) {
+    if (event.target.dataset.field !== 'volume') return;
+
+    const card = event.target.closest('[data-media-id]');
+    const entry = this.media.find(m => m.card === card);
+    if (!entry) return;
+
+    const volume = Number(event.target.value);
+    if (!Number.isFinite(volume)) return;
+
+    entry.previewVolume = true;
+    entry.el.volume = Math.max(0, Math.min(1, volume));
+    entry.el.muted = false;
+    card.querySelector('.media-volume output').textContent = Math.round(entry.el.volume * 100) + '%';
+  }
+
+  /** Меняется любое поле вложения: громкость, «С плеером», начало, конец. */
+  async changeMedia(event) {
+    const field = event.target.dataset.field;
+    const card = event.target.closest('[data-media-id]');
+    if (!field || !card) return;
+
+    const piece = songs.find(p => p.id === activeId);
+    const item = piece?.media?.find(m => m.id === card.dataset.mediaId);
+    if (!item) return;
+
+    const previous = { ...item };
+    const value = field === 'sync'
+      ? event.target.checked
+      : event.target.value === '' ? null : Number(event.target.value);
+
+    if (field === 'volume') {
+      if (!Number.isFinite(value) || value < 0 || value > 1) return;
+
+      const entry = this.media.find(m => m.card === card);
+      if (entry) {
+        entry.previewVolume = false;
+        entry.el.volume = value;
+        entry.el.muted = false;
+        card.querySelector('.media-volume output').textContent = Math.round(value * 100) + '%';
+      }
+    }
+
+    item[field] = value;
+
+    const badNumber = field !== 'sync' && value !== null && (!Number.isFinite(value) || value < 0);
+    const endBeforeStart = item.end !== null && Number(item.end) <= Number(item.start);
+
+    if (badNumber || endBeforeStart) {
+      Object.assign(item, previous);
+      event.target.value = previous[field] ?? '';
+      toast('Конец должен быть позже начала; время не может быть отрицательным.');
+      return;
+    }
+
+    try {
+      await putPiece(piece);
+      if (field !== 'volume') this.sync(currentPosition(), playing, playSpeed, true);
+    } catch (error) {
+      Object.assign(item, previous);
+      this.renderMedia(piece);
+      toast(error.message);
+    }
+  }
+
+  /** Кнопки в карточке: «Начать отсюда» и «Удалить». */
+  async mediaClick(event) {
+    const action = event.target.dataset.mediaAction;
+    const card = event.target.closest('[data-media-id]');
+    if (!action || !card) return;
+
+    const piece = songs.find(p => p.id === activeId);
+    const item = piece?.media?.find(m => m.id === card.dataset.mediaId);
+    if (!item) return;
+
+    if (action === 'here') {
+      // Подставляем текущую позицию нот в поле «С».
+      const field = card.querySelector('[data-field="start"]');
+      field.value = currentPosition().toFixed(1);
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
+
+    if (action === 'delete') {
+      if (!confirm('Удалить вложение «' + item.name + '»?')) return;
+
+      const previous = piece.media;
+      piece.media = piece.media.filter(m => m.id !== item.id);
+
+      try {
+        await putPiece(piece);
+        await this.request('/api/files/' + item.id, { method: 'DELETE' });
+        this.renderMedia(piece);
+        this.renderFiles();
+      } catch (error) {
+        piece.media = previous;
+        await putPiece(piece).catch(() => {});
+        this.renderMedia(piece);
+        toast(error.message);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Синхронизация медиа с плеером нот
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Подгоняет все привязанные вложения под текущую позицию нот.
+   * @param time      позиция в секундах партитуры
+   * @param isPlaying играют ли ноты сейчас
+   * @param speed     скорость воспроизведения (1 = темп из файла)
+   * @param force     принудительно перемотать, даже если расхождение небольшое
+   */
+  sync(time, isPlaying, speed = 1, force = false) {
+    let stageHasContent = false;
+
+    for (const entry of this.media) {
+      const { item, el, card, type } = entry;
+
+      const start = Number(item.start || 0);
+      const active = time >= start && (item.end == null || time < Number(item.end));
+
+      // Подсветка карточки: активна на своём участке, приглушена вне его.
+      card.classList.toggle('media-active', !!item.sync && active);
+      card.classList.toggle('media-outside', !!item.sync && !active);
+
+      // Под нотами медиа видно только на своём отрезке плеера.
+      const showInStage = !!item.sync && active;
+      this.placeInStage(entry, showInStage);
+      stageHasContent ||= showInStage && !!entry.slot;
+
+      if (type === 'image') continue;
+
+      // Без привязки к плееру медиа живёт своей жизнью.
+      if (!item.sync) {
+        if (entry.wasSync) {
+          el.pause();
+          entry.wasSync = false;
+        }
+        continue;
+      }
+      entry.wasSync = true;
+
+      const target = Math.max(0, time - start);
+      const hasDuration = Number.isFinite(el.duration);
+      const seekTarget = hasDuration ? Math.min(target, el.duration) : target;
+      const ended = hasDuration && target >= el.duration;
+
+      if (!active || !isPlaying || ended) el.pause();
+
+      // Перематываем, если медиа заметно расходится с нотами.
+      if (el.readyState) {
+        const drift = Math.abs(el.currentTime - seekTarget);
+        const needsSeek = ((force || !isPlaying) && drift > 0.05) || drift > 0.35;
+        if (needsSeek) {
+          try {
+            el.currentTime = seekTarget;
+          } catch {
+            // Браузер ещё не позволяет перематывать — попробуем при следующей синхронизации.
+          }
+        }
+      }
+
+      if (el.playbackRate !== speed) el.playbackRate = speed;
+
+      const shouldPlay = active && isPlaying && !ended && el.paused && !entry.pending && !entry.blocked;
+      if (shouldPlay) this.startMedia(entry);
+    }
+
+    $('#scoreMedia').classList.toggle('hidden', !stageHasContent);
+  }
+
+  /** Запускает воспроизведение; если браузер запретил автозапуск — просим нажать вручную. */
+  startMedia(entry) {
+    const { item, el, card } = entry;
+    entry.pending = true;
+
+    el.play()
+      .catch(error => {
+        if (error.name === 'AbortError') return;
+        entry.blocked = true;
+        card.querySelector('.media-error').textContent = 'Нажмите ▶ на медиа, чтобы разрешить воспроизведение.';
+      })
+      .finally(() => {
+        entry.pending = false;
+        if (!playing || !item.sync || !card.isConnected) el.pause();
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Перенос старой библиотеки из браузера на сервер
+  // ---------------------------------------------------------------------------
+
+  async importBrowser() {
+    const button = $('#importBrowser');
+    button.disabled = true;
+
+    try {
+      const pieces = await this.readBrowserLibrary();
+      const existing = new Set(songs.map(p => p.id));
+      let count = 0;
+
+      for (const piece of pieces) {
+        if (existing.has(piece.id)) continue; // уже перенесено — не перезаписываем
+
+        if (piece.demo) {
+          await this.save(piece);
+        } else {
+          const original = piece.midiData
+            ? new File([piece.midiData], piece.title + '.mid')
+            : new File([piece.xml], piece.title + '.musicxml');
+          await this.create(piece, original);
+        }
+        count++;
+      }
+
+      songs = await getAll();
+      render();
+      toast('Перенесено произведений: ' + count + '. Исходная библиотека браузера сохранена.');
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  /** Читает все произведения из IndexedDB текущего браузера. */
+  async readBrowserLibrary() {
+    const db = await openDB();
+
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE);
+      const request = transaction.objectStore(STORE).getAll();
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => db.close();
+    });
+  }
 }
