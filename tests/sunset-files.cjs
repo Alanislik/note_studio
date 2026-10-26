@@ -62,10 +62,14 @@ test('Sunset uses downloaded editable files, follows cues and installs only once
  await page.locator('#playBtn').click();await page.waitForFunction(()=>playing&&currentPosition()>46.2);await page.locator('#playBtn').click();await page.waitForFunction(()=>!playing);
  const frozen=await page.locator('#scoreMedia [data-role=sprite]').first().getAttribute('style');await page.evaluate(()=>studio.sync(pausedAt,false,playSpeed,true));assert.equal(await page.locator('#scoreMedia [data-role=sprite]').first().getAttribute('style'),frozen);
  if(process.env.SUNSET_SCREENSHOT)await page.locator('#scoreMedia .file-scene').screenshot({path:process.env.SUNSET_SCREENSHOT});
+ await positionCard.locator('[data-field=rate]').fill('2');await positionCard.locator('[data-field=rate]').dispatchEvent('change');await positionCard.locator('[data-field=loop]').uncheck();await page.evaluate(()=>studio.saving);
+ const motionStart=kris.start;await page.evaluate(t=>seek(t+2.1),motionStart);const finishedMotion=await positionSlot.getAttribute('style');await page.evaluate(t=>seek(t+3),motionStart);assert.equal(await positionSlot.getAttribute('style'),finishedMotion);
+
  await page.evaluate(()=>seek(90));assert.equal(await page.locator('#scoreMedia .stage-item:not(.hidden)').count(),1);
  await page.reload();await page.waitForFunction(()=>songs.length>0);await page.evaluate(id=>openReader(id),pieceId);
  await page.waitForFunction(()=>document.querySelectorAll('.media-card').length===6);
  assert.deepEqual(await page.evaluate(()=>songs.find(p=>p.id===activeId).media.map(m=>m.id)),original);
+ assert.equal(await positionCard.locator('[data-field=rate]').inputValue(),'2');assert.equal(await positionCard.locator('[data-field=loop]').isChecked(),false);
  assert.equal(await positionCard.locator('[data-field=layoutOffsetX]').inputValue(),'125');assert.equal(await positionCard.locator('[data-field=layoutOffsetY]').inputValue(),'3');assert.equal(await positionCard.locator('[data-field=layoutLayer]').inputValue(),'8');
  await positionCard.locator('[data-media-action=reset-position]').click();await page.evaluate(()=>studio.saving);
  assert.equal(await positionCard.locator('[data-field=layoutOffsetX]').inputValue(),'0');assert.equal(await positionCard.locator('[data-field=layoutOffsetY]').inputValue(),'0');assert.equal(await positionCard.locator('[data-field=layoutLayer]').inputValue(),'3');

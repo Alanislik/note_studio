@@ -258,7 +258,7 @@ class NotaStudio {
   close() {
     this.endDrag(null, false);
     this.setPositionMode(false);
-    for (const entry of this.media) entry.el?.pause?.();
+    for (const entry of this.media) { entry.el?.pause?.(); entry.animation?.dispose(); }
     for (const url of this.urls) URL.revokeObjectURL(url);
 
     this.media = [];
@@ -459,7 +459,7 @@ class NotaStudio {
   }
 
   renderMedia(piece) {
-    for (const entry of this.media) entry.el?.pause?.();
+    for (const entry of this.media) { entry.el?.pause?.(); entry.animation?.dispose(); }
     this.media = [];
 
     $('#mediaInput').disabled = !this.online;
@@ -495,6 +495,12 @@ class NotaStudio {
       if (entry.type !== 'audio') this.applyLayout(entry);
 
       this.media.push(entry);
+      if (this.isGif(entry.item)) {
+        entry.animation = new GifAnimation('/api/files/' + encodeURIComponent(entry.item.id),
+          [entry.el, entry.slot.querySelector('canvas')],
+          () => { if (this.media.includes(entry)) this.sync(currentPosition(), playing, playSpeed, true); },
+          error => { if (entry.card.isConnected) entry.card.querySelector('.media-error').textContent = error.message; });
+      }
     }
 
     // Показ медиа под нотами решает sync(): видно только то, что активно сейчас.
@@ -513,6 +519,7 @@ class NotaStudio {
     slot.className = 'stage-item hidden';
 
     if (entry.type === 'image') {
+      if (this.isGif(entry.item)) { slot.append(this.imageCanvas(entry.item)); return slot; }
       const img = document.createElement('img');
       img.alt = entry.item.name;
       img.src = '/api/files/' + encodeURIComponent(entry.item.id);
@@ -572,6 +579,10 @@ class NotaStudio {
         <output>${Math.round(volume * 100)}%</output>
       </label>`;
 
+    const animationControl = type !== 'image' || this.isGif(item) || item.scene?.motion ? `
+      <div class="media-animation"><label>Скорость <input type="number" min="0.25" max="4" step="0.25" value="${this.mediaRate(item)}" data-field="rate" aria-label="Скорость ${name}"> ×</label>
+      <label><input type="checkbox" data-field="loop" ${this.mediaLoop(item) ? 'checked' : ''}> Повторять</label>
+      <button class="text-link" data-media-action="restart">Сначала</button></div>` : '';
     const layout = this.layout(item);
     const sizeControl = type === 'audio' ? '' : `
       <fieldset class="media-size-controls"><legend>Размер и расположение</legend>
@@ -591,6 +602,7 @@ class NotaStudio {
         <small>${MEDIA_TYPE_LABELS[type]} · ${this.size(item.size)}</small>
         ${sourceLink}
         ${volumeControl}
+        ${animationControl}
         ${sizeControl}
         <div class="media-timing">
           <label><input type="checkbox" data-field="sync" ${item.sync ? 'checked' : ''}> С плеером</label>
@@ -609,11 +621,21 @@ class NotaStudio {
       </div>`;
   }
 
+  isGif(item) { return item.type === 'image/gif' || /\.gif$/i.test(item.name); }
+  mediaRate(item) { return Number.isFinite(item.rate) ? Math.max(.25, Math.min(4, item.rate)) : 1; }
+  mediaLoop(item) { return typeof item.loop === 'boolean' ? item.loop : this.isGif(item) || !!item.scene?.motion; }
+  imageCanvas(item) {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'gif-frame'; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', item.name);
+    return canvas;
+  }
+
   /** Создаёт <img>, <video> или <audio> и подключает к нему обработчики. */
   createMediaElement(item, type, card, volume) {
     const errorLabel = card.querySelector('.media-error');
 
     if (type === 'image') {
+      if (this.isGif(item)) return this.imageCanvas(item);
       const img = document.createElement('img');
       img.alt = item.name;
       img.loading = 'lazy';
@@ -740,10 +762,13 @@ class NotaStudio {
     }
 
     const previous = { ...item };
-    const value = field === 'sync'
+    const value = (field === 'sync' || field === 'loop')
       ? event.target.checked
       : event.target.value === '' ? null : Number(event.target.value);
 
+    if (field === 'rate' && (!Number.isFinite(value) || value < .25 || value > 4)) {
+      event.target.value = this.mediaRate(item); toast('Скорость — от 0,25× до 4×.'); return;
+    }
     if (field === 'volume') {
       if (!Number.isFinite(value) || value < 0 || value > 1) return;
 
@@ -758,7 +783,7 @@ class NotaStudio {
 
     item[field] = value;
 
-    const badNumber = field !== 'sync' && value !== null && (!Number.isFinite(value) || value < 0);
+    const badNumber = field !== 'sync' && field !== 'loop' && value !== null && (!Number.isFinite(value) || value < 0);
     const endBeforeStart = item.end !== null && Number(item.end) <= Number(item.start);
 
     if (badNumber || endBeforeStart) {
@@ -787,6 +812,14 @@ class NotaStudio {
     const piece = songs.find(p => p.id === activeId);
     const item = piece?.media?.find(m => m.id === card.dataset.mediaId);
     if (!item) return;
+
+    if (action === 'restart') {
+      const entry = this.media.find(m => m.card === card);
+      if (item.sync) seek(Number(item.start) || 0);
+      else if (entry?.animation) entry.animation.restart();
+      else if (entry?.el?.play) { entry.el.currentTime = 0; entry.el.play().catch(error => toast(error.message)); }
+      return;
+    }
 
     if (action === 'reset-position') {
       const entry = this.media.find(m => m.card === card);
@@ -853,7 +886,9 @@ class NotaStudio {
     for (const entry of this.media) {
       const { item, el, card, type } = entry;
 
+      const rate = this.mediaRate(item), loop = this.mediaLoop(item);
       const start = Number(item.start || 0);
+      const elapsed = Math.max(0, Math.min(time, item.end == null ? time : Number(item.end)) - start);
       const active = time >= start && (item.end == null || time < Number(item.end));
 
       // Подсветка карточки: активна на своём участке, приглушена вне его.
@@ -870,15 +905,25 @@ class NotaStudio {
           entry.group.style.height = 'min(' + layout.height + 'px, 62vw)';
         } else {
           const moving = item.scene.motion && !matchMedia('(prefers-reduced-motion: reduce)').matches;
-          const phase = time - start;
-          const x = moving ? Math.sin(phase * .5 + (item.scene.order || 0)) * 12 : 0;
-          const y = moving ? Math.sin(phase * 1.6 + (item.scene.order || 0)) * 6 : 0;
+          const sourceTime = elapsed * rate;
+          const phase = loop ? sourceTime % 4 : Math.min(4, sourceTime);
+          const x = moving ? Math.sin(phase * Math.PI / 2 + (item.scene.order || 0)) * 12 : 0;
+          const y = moving ? Math.sin(phase * Math.PI + (item.scene.order || 0)) * 6 : 0;
           entry.slot.style.transform = `translate(calc(-50% + ${x.toFixed(2)}px), calc(-50% + ${y.toFixed(2)}px))`;
         }
       }
       stageHasContent ||= showInStage && !!entry.slot;
 
-      if (type === 'image') continue;
+      if (type === 'image') {
+        if (entry.animation) {
+          if (item.sync) entry.animation.sync(elapsed * rate, loop);
+          else entry.animation.free(rate, loop);
+        }
+        continue;
+      }
+      el.loop = loop;
+      const effectiveRate = Math.max(.0625, Math.min(16, rate * (item.sync ? speed : 1)));
+      if (el.playbackRate !== effectiveRate) el.playbackRate = effectiveRate;
 
       // Без привязки к плееру медиа живёт своей жизнью.
       if (!item.sync) {
@@ -890,17 +935,19 @@ class NotaStudio {
       }
       entry.wasSync = true;
 
-      const target = Math.max(0, time - start);
+      const target = elapsed * rate;
       const hasDuration = Number.isFinite(el.duration);
-      const seekTarget = hasDuration ? Math.min(target, el.duration) : target;
-      const ended = hasDuration && target >= el.duration;
+      const canLoop = loop && hasDuration && el.duration > 0;
+      const seekTarget = canLoop ? target % el.duration : hasDuration ? Math.min(target, el.duration) : target;
+      const ended = !canLoop && hasDuration && target >= el.duration;
 
       if (!active || !isPlaying || ended) el.pause();
 
       // Перематываем, если медиа заметно расходится с нотами.
       if (el.readyState) {
         const drift = Math.abs(el.currentTime - seekTarget);
-        const needsSeek = ((force || !isPlaying) && drift > 0.05) || drift > 0.35;
+        const circularDrift = canLoop ? Math.min(drift, Math.abs(el.duration - drift)) : drift;
+        const needsSeek = ((force || !isPlaying) && drift > 0.05) || circularDrift > 0.35;
         if (needsSeek) {
           try {
             el.currentTime = seekTarget;
@@ -910,7 +957,6 @@ class NotaStudio {
         }
       }
 
-      if (el.playbackRate !== speed) el.playbackRate = speed;
 
       const shouldPlay = active && isPlaying && !ended && el.paused && !entry.pending && !entry.blocked;
       if (shouldPlay) this.startMedia(entry);

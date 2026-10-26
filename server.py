@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
             if not row:
                 return self.error('Файл не найден.', 404)
             return self.send_file(self.server.store.directory / row['path'], row['type'], row['name'])
-        allowed = {'/', '/index.html', '/styles.css', '/app.js', '/audio-engine.js', '/studio.js', '/sunset-preset.js',
+        allowed = {'/', '/index.html', '/styles.css', '/app.js', '/audio-engine.js', '/studio.js', '/sunset-preset.js', '/animated-image.js', '/vendor/omggif.js',
                    '/assets/sunset/sunset.jpg', '/assets/sunset/kris.png',
                    '/assets/sunset/susie.png', '/assets/sunset/ralsei.png', '/assets/sunset/sources.json'}
         if path not in allowed:

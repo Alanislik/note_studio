@@ -1,4 +1,4 @@
-// Run: node --test tests/studio.cjs. Requires Playwright, Chromium, Python 3 and curl.
+// Run: node --test tests/studio.cjs. Requires Playwright, Chromium, Python 3, curl and ffmpeg.
 const {test,before,after}=require('node:test');
 const assert=require('node:assert/strict');
 const {chromium}=require('playwright');
@@ -111,6 +111,30 @@ test('originals, multiple media, cues and note effects persist and work together
  await page.locator('#deleteReader').click();await page.waitForFunction(()=>songs.length===5);
  assert.equal((await page.request.get(base+original.url)).status(),404);
  for(const file of attached)assert.equal((await page.request.get(base+file.url)).status(),404);
+ assert.deepEqual(errors,[]);
+});
+
+test('video speed, looping, restart and persistence follow the note clock',async()=>{
+ const fixture=path.join(temp,'loop.webm');
+ execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','color=c=purple:s=160x90:r=10','-t','1','-c:v','libvpx','-y',fixture]);
+ await page.evaluate(()=>openReader('demo-1'));await page.waitForSelector('#score svg');
+ await page.locator('#mediaInput').setInputFiles({name:'loop.webm',mimeType:'video/webm',buffer:fs.readFileSync(fixture)});
+ await page.waitForFunction(()=>document.querySelectorAll('.media-card').length===1&&Number.isFinite(document.querySelector('video')?.duration));
+ const card=page.locator('.media-card');
+ await card.locator('[data-field=rate]').fill('2');await card.locator('[data-field=rate]').dispatchEvent('change');await card.locator('[data-field=loop]').check();await card.locator('[data-field=sync]').check();await waitSaved();
+ await page.evaluate(()=>seek(.65));
+ const duration=await page.locator('video').evaluate(el=>el.duration);
+ assert.ok(Math.abs(await page.locator('video').evaluate(el=>el.currentTime)-(1.3%duration))<.08);
+ await page.locator('#tempoInput').fill('220');await page.locator('#playBtn').click();await page.waitForFunction(()=>playing&&document.querySelector('video').playbackRate===4);
+ await page.waitForFunction(()=>currentPosition()>2.2);assert.equal(await page.locator('video').evaluate(el=>el.paused),false);
+ await page.locator('#playBtn').click();await page.waitForFunction(()=>!playing);
+ await card.locator('[data-field=loop]').uncheck();await waitSaved();await page.evaluate(()=>seek(2.5));
+ assert.equal(await page.locator('video').evaluate(el=>el.paused),true);assert.ok(Math.abs(await page.locator('video').evaluate(el=>el.currentTime)-duration)<.08);
+ await card.locator('[data-media-action=restart]').click();assert.equal(await page.evaluate(()=>pausedAt),0);
+ await card.locator('[data-field=rate]').fill('1.5');await card.locator('[data-field=rate]').dispatchEvent('change');await card.locator('[data-field=loop]').check();await card.locator('[data-field=sync]').uncheck();await waitSaved();
+ assert.equal(await page.locator('video').evaluate(el=>el.playbackRate),1.5);
+ await page.reload();await page.waitForFunction(()=>songs.length===5);await page.evaluate(()=>openReader('demo-1'));
+ assert.equal(await card.locator('[data-field=rate]').inputValue(),'1.5');assert.equal(await card.locator('[data-field=loop]').isChecked(),true);assert.equal(await page.locator('video').evaluate(el=>el.loop),true);
  assert.deepEqual(errors,[]);
 });
 
