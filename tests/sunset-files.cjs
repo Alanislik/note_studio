@@ -38,6 +38,22 @@ test('Sunset uses downloaded editable files, follows cues and installs only once
  const png=page.locator('#scoreMedia [data-role=sprite] img').first();
  assert.equal(await png.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
  const kris=await page.evaluate(()=>songs.find(p=>p.id===activeId).media.find(m=>m.name.includes('Крис')));
+ const positionCard=page.locator('.media-card[data-media-id="'+kris.id+'"]');
+ const positionSlot=page.locator('#scoreMedia [data-media-id="'+kris.id+'"]');
+ const before=await positionSlot.boundingBox();
+ for(const [field,value] of Object.entries({layoutOffsetX:85,layoutOffsetY:-22,layoutLayer:8}))await positionCard.locator('[data-field='+field+']').evaluate((el,value)=>{el.value=value;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))},String(value));
+ await page.evaluate(()=>studio.saving);
+ const shifted=await positionSlot.boundingBox();assert.ok(Math.abs(shifted.x-before.x-85)<1);assert.ok(Math.abs(shifted.y-before.y+22)<1);
+ assert.equal(await positionSlot.evaluate(el=>getComputedStyle(el).zIndex),'8');
+ await page.locator('#mediaPositionMode').click();await positionSlot.scrollIntoViewIfNeeded();
+ const box=await positionSlot.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.move(box.x+box.width/2+40,box.y+box.height/2+25,{steps:5});await page.mouse.up();await page.evaluate(()=>studio.saving);
+ assert.equal(await positionCard.locator('[data-field=layoutOffsetX]').inputValue(),'125');assert.equal(await positionCard.locator('[data-field=layoutOffsetY]').inputValue(),'3');
+ // Pointer cancellation restores the preview and does not change the saved layout.
+ const cancelBox=await positionSlot.boundingBox();await page.mouse.move(cancelBox.x+cancelBox.width/2,cancelBox.y+cancelBox.height/2);await page.mouse.down();await page.mouse.move(cancelBox.x+cancelBox.width/2+20,cancelBox.y+cancelBox.height/2+15,{steps:3});
+ await page.evaluate(()=>$('#scoreMedia').dispatchEvent(new PointerEvent('pointercancel',{pointerId:studio.drag.pointerId,bubbles:true})));await page.mouse.up();
+ assert.equal(await positionCard.locator('[data-field=layoutOffsetX]').inputValue(),'125');assert.equal(await positionCard.locator('[data-field=layoutOffsetY]').inputValue(),'3');
+
+ await page.locator('#mediaPositionMode').click();assert.equal(await page.locator('#mediaPositionMode').getAttribute('aria-pressed'),'false');
  const data=await (await page.request.get(base+kris.url)).body();
  assert.deepEqual(data,fs.readFileSync(path.join(__dirname,'../assets/sunset/kris.png')));
  const frame=await page.locator('#scoreMedia [data-role=sprite]').first().getAttribute('style');
@@ -50,6 +66,10 @@ test('Sunset uses downloaded editable files, follows cues and installs only once
  await page.reload();await page.waitForFunction(()=>songs.length>0);await page.evaluate(id=>openReader(id),pieceId);
  await page.waitForFunction(()=>document.querySelectorAll('.media-card').length===6);
  assert.deepEqual(await page.evaluate(()=>songs.find(p=>p.id===activeId).media.map(m=>m.id)),original);
+ assert.equal(await positionCard.locator('[data-field=layoutOffsetX]').inputValue(),'125');assert.equal(await positionCard.locator('[data-field=layoutOffsetY]').inputValue(),'3');assert.equal(await positionCard.locator('[data-field=layoutLayer]').inputValue(),'8');
+ await positionCard.locator('[data-media-action=reset-position]').click();await page.evaluate(()=>studio.saving);
+ assert.equal(await positionCard.locator('[data-field=layoutOffsetX]').inputValue(),'0');assert.equal(await positionCard.locator('[data-field=layoutOffsetY]').inputValue(),'0');assert.equal(await positionCard.locator('[data-field=layoutLayer]').inputValue(),'3');
+
  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
  await page.evaluate(()=>seek(45));assert.equal(await page.locator('#scoreMedia .stage-item:not(.hidden)').count(),4);
  // Deleting a preset attachment stays deleted on the next opening.

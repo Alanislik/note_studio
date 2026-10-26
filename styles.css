@@ -1618,3 +1618,15 @@ button:disabled {
 .file-scene .scene-layer[data-role=sprite]{height:var(--media-height,140px);max-height:48%;transform:translate(-50%,-50%)}
 .file-scene .scene-layer[data-role=sprite] img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;background:transparent}
 .media-source{display:inline-block;font-size:10px;color:#8b6f9d;margin-top:8px;text-decoration:underline;text-underline-offset:3px}
+
+/* Explicit edit mode leaves normal video controls and touch scrolling available. */
+.stage-item{position:relative}
+.media-position-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px}
+.media-position-toolbar>span{flex:1;min-width:180px;font-size:11px;line-height:1.6;color:#887d94}
+.media-position-toolbar button{font-size:12px;background:#f0eafa;color:#71558d}
+.media-position-toolbar button[aria-pressed=true]{background:#7354df;color:#fff}
+.position-editing .stage-item{cursor:grab;touch-action:none;outline:1px dashed #a58ac5;outline-offset:-2px}
+.position-editing .stage-item::after{content:'Перетащить';position:absolute;inset:0;z-index:99;display:flex;align-items:flex-start;justify-content:flex-start;padding:5px;box-sizing:border-box;color:#fff;font-size:10px;text-shadow:0 1px 3px #000;background:linear-gradient(#7354df30,transparent 35%);pointer-events:auto;cursor:grab}
+.position-editing .stage-item img,.position-editing .stage-item video{pointer-events:none;user-select:none}
+.position-editing .position-dragging,.position-editing .position-dragging::after{cursor:grabbing}
+.media-layout-actions{display:flex;flex-wrap:wrap;gap:12px}.media-size-controls output{width:55px;flex-shrink:0}

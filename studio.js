@@ -25,6 +25,8 @@ class NotaStudio {
     this.media = [];              // отрисованные вложения: { item, el, card, type, ... }
     this.saving = Promise.resolve(); // очередь записи, чтобы быстрые правки не затирали друг друга
     this.lastPiece = null;
+    this.positionEditing = false;
+    this.drag = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -94,6 +96,15 @@ class NotaStudio {
     list.addEventListener('input', event => { this.previewVolume(event); this.previewLayout(event); });
     list.addEventListener('change', event => this.changeMedia(event));
     list.addEventListener('click', event => this.mediaClick(event));
+    $('#mediaPositionMode').onclick = () => this.setPositionMode(!this.positionEditing);
+    const stage = $('#scoreMedia');
+    stage.addEventListener('pointerdown', event => this.startDrag(event));
+    stage.addEventListener('pointermove', event => this.moveDrag(event));
+    stage.addEventListener('pointerup', event => this.endDrag(event, true));
+    stage.addEventListener('pointercancel', event => this.endDrag(event, false));
+    stage.addEventListener('lostpointercapture', event => this.endDrag(event, false));
+    window.addEventListener('blur', () => this.endDrag(null, false));
+
 
     // Когда пользователь возвращается на вкладку, подтягиваем медиа к позиции нот.
     document.addEventListener('visibilitychange', () => {
@@ -245,6 +256,8 @@ class NotaStudio {
 
   /** Останавливает все вложения и освобождает ресурсы. */
   close() {
+    this.endDrag(null, false);
+    this.setPositionMode(false);
     for (const entry of this.media) entry.el?.pause?.();
     for (const url of this.urls) URL.revokeObjectURL(url);
 
@@ -306,6 +319,9 @@ class NotaStudio {
       width: Number.isFinite(layout.width) ? Math.max(20, Math.min(100, layout.width)) : 100,
       height: Number.isFinite(layout.height) ? Math.max(80, Math.min(720, layout.height)) : 320,
       fit: layout.fit === 'cover' ? 'cover' : 'contain',
+      offsetX: Number.isFinite(layout.offsetX) ? Math.max(-500, Math.min(500, layout.offsetX)) : 0,
+      offsetY: Number.isFinite(layout.offsetY) ? Math.max(-300, Math.min(300, layout.offsetY)) : 0,
+      layer: Number.isFinite(layout.layer) ? Math.max(0, Math.min(20, layout.layer)) : Math.max(0, Math.min(20, item.scene?.order || 0)),
     };
   }
 
@@ -316,13 +332,16 @@ class NotaStudio {
       node.style.setProperty('--media-height', layout.height + 'px');
       node.style.setProperty('--media-fit', layout.fit);
     }
-    if (entry.slot) entry.slot.style.width = layout.width + '%';
+    if (entry.slot) {
+      entry.slot.style.width = layout.width + '%';
+      entry.slot.style.translate = layout.offsetX + 'px ' + layout.offsetY + 'px';
+      entry.slot.style.zIndex = String(layout.layer);
+    }
     if (entry.group) {
       const scene = entry.item.scene || {};
       const clamp = (value, fallback) => Number.isFinite(value) ? Math.max(0, Math.min(100,value)) : fallback;
       entry.slot.style.left = scene.role === 'background' ? '0' : clamp(scene.x,50) + '%';
       entry.slot.style.top = scene.role === 'background' ? '0' : clamp(scene.y,50) + '%';
-      entry.slot.style.zIndex = String(scene.role === 'background' ? 0 : clamp(scene.order,1));
       if (scene.role === 'background') {
         entry.slot.style.width = '100%';
         if (!entry.slot.classList.contains('hidden')) {
@@ -336,6 +355,10 @@ class NotaStudio {
     const height = entry.card.querySelector('[data-layout-output=height]');
     if (width) width.textContent = layout.width + '%';
     if (height) height.textContent = layout.height + ' px';
+    for (const key of ['offsetX', 'offsetY', 'layer']) {
+      const output = entry.card.querySelector('[data-layout-output=' + key + ']');
+      if (output) output.textContent = layout[key] + (key === 'layer' ? '' : ' px');
+    }
   }
 
   readLayout(card) {
@@ -343,6 +366,9 @@ class NotaStudio {
       width: Number(card.querySelector('[data-field=layoutWidth]').value),
       height: Number(card.querySelector('[data-field=layoutHeight]').value),
       fit: card.querySelector('[data-field=layoutFit]').value,
+      offsetX: Number(card.querySelector('[data-field=layoutOffsetX]').value),
+      offsetY: Number(card.querySelector('[data-field=layoutOffsetY]').value),
+      layer: Number(card.querySelector('[data-field=layoutLayer]').value),
     } });
   }
 
@@ -363,11 +389,61 @@ class NotaStudio {
       if (entry.item.layout === layout) {
         entry.item.layout = previous;
         const old = this.layout(entry.item);
-        for (const [field, value] of Object.entries({ layoutWidth: old.width, layoutHeight: old.height, layoutFit: old.fit }))
+        for (const [field, value] of Object.entries({ layoutWidth: old.width, layoutHeight: old.height, layoutFit: old.fit, layoutOffsetX: old.offsetX, layoutOffsetY: old.offsetY, layoutLayer: old.layer }))
           entry.card.querySelector('[data-field=' + field + ']').value = value;
         this.applyLayout(entry, old);
       }
       toast(error.message);
+    }
+  }
+
+  setPositionMode(enabled) {
+    if (!enabled) this.endDrag(null, false);
+    this.positionEditing = enabled;
+    $('#scoreMedia').classList.toggle('position-editing', enabled);
+    const button = $('#mediaPositionMode');
+    button.setAttribute('aria-pressed', String(enabled));
+    button.textContent = enabled ? 'Готово: закончить перемещение' : 'Переместить на сцене';
+  }
+
+  startDrag(event) {
+    if (!this.positionEditing || this.drag || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const slot = event.target.closest('.stage-item');
+    const entry = this.media.find(m => m.slot === slot);
+    if (!entry) return;
+    event.preventDefault();
+    const layout = this.readLayout(entry.card);
+    this.drag = { entry, piece: songs.find(p => p.id === activeId), pointerId: event.pointerId,
+      x: event.clientX, y: event.clientY, layout };
+    slot.classList.add('position-dragging');
+    $('#scoreMedia').setPointerCapture(event.pointerId);
+  }
+
+  moveDrag(event) {
+    const drag = this.drag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    const layout = this.layout({ layout: { ...drag.layout,
+      offsetX: Math.round(drag.layout.offsetX + event.clientX - drag.x),
+      offsetY: Math.round(drag.layout.offsetY + event.clientY - drag.y) } });
+    drag.entry.card.querySelector('[data-field=layoutOffsetX]').value = layout.offsetX;
+    drag.entry.card.querySelector('[data-field=layoutOffsetY]').value = layout.offsetY;
+    this.applyLayout(drag.entry, layout);
+  }
+
+  endDrag(event, save) {
+    const drag = this.drag;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    this.drag = null; // releasing capture emits lostpointercapture; ignore that notification.
+    drag.entry.slot.classList.remove('position-dragging');
+    const stage = $('#scoreMedia');
+    if (stage.hasPointerCapture(drag.pointerId)) stage.releasePointerCapture(drag.pointerId);
+    if (save && drag.piece && this.media.includes(drag.entry)) {
+      this.saveLayout(drag.entry, drag.piece);
+    } else {
+      drag.entry.card.querySelector('[data-field=layoutOffsetX]').value = drag.layout.offsetX;
+      drag.entry.card.querySelector('[data-field=layoutOffsetY]').value = drag.layout.offsetY;
+      this.applyLayout(drag.entry, drag.layout);
     }
   }
 
@@ -498,11 +574,14 @@ class NotaStudio {
 
     const layout = this.layout(item);
     const sizeControl = type === 'audio' ? '' : `
-      <fieldset class="media-size-controls"><legend>Размер под нотами</legend>
+      <fieldset class="media-size-controls"><legend>Размер и расположение</legend>
         <label>Ширина <input type="range" min="20" max="100" step="1" value="${layout.width}" data-field="layoutWidth" aria-label="Ширина ${name}"><output data-layout-output="width">${layout.width}%</output></label>
         <label>Высота <input type="range" min="80" max="720" step="10" value="${layout.height}" data-field="layoutHeight" aria-label="Высота ${name}"><output data-layout-output="height">${layout.height} px</output></label>
         <label>Кадрирование <select data-field="layoutFit" aria-label="Кадрирование ${name}"><option value="contain" ${layout.fit === 'contain' ? 'selected' : ''}>Вписать целиком</option><option value="cover" ${layout.fit === 'cover' ? 'selected' : ''}>Заполнить с обрезкой</option></select></label>
-        <button class="text-link" data-media-action="reset-layout">Сбросить размер</button>
+        <label>Смещение X <input type="range" min="-500" max="500" step="1" value="${layout.offsetX}" data-field="layoutOffsetX" aria-label="Смещение X ${name}"><output data-layout-output="offsetX">${layout.offsetX} px</output></label>
+        <label>Смещение Y <input type="range" min="-300" max="300" step="1" value="${layout.offsetY}" data-field="layoutOffsetY" aria-label="Смещение Y ${name}"><output data-layout-output="offsetY">${layout.offsetY} px</output></label>
+        <label>Слой <input type="range" min="0" max="20" step="1" value="${layout.layer}" data-field="layoutLayer" aria-label="Слой ${name}"><output data-layout-output="layer">${layout.layer}</output></label>
+        <div class="media-layout-actions"><button class="text-link" data-media-action="reset-layout">Сбросить размер</button><button class="text-link" data-media-action="reset-position">Сбросить положение</button></div>
       </fieldset>`;
 
     return `
@@ -708,6 +787,16 @@ class NotaStudio {
     const piece = songs.find(p => p.id === activeId);
     const item = piece?.media?.find(m => m.id === card.dataset.mediaId);
     if (!item) return;
+
+    if (action === 'reset-position') {
+      const entry = this.media.find(m => m.card === card);
+      if (!entry || entry.type === 'audio') return;
+      card.querySelector('[data-field=layoutOffsetX]').value = 0;
+      card.querySelector('[data-field=layoutOffsetY]').value = 0;
+      card.querySelector('[data-field=layoutLayer]').value = this.layout({ scene: item.scene }).layer;
+      await this.saveLayout(entry, piece);
+      return;
+    }
 
     if (action === 'reset-layout') {
       const entry = this.media.find(m => m.card === card);

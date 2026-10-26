@@ -82,6 +82,9 @@ test('originals, multiple media, cues and note effects persist and work together
  assert.match(await page.locator('#score .note-playing').first().evaluate(el=>getComputedStyle(el).filter),/drop-shadow/);
  await audioCard.locator('[data-field=volume]').evaluate(el=>{el.value='0';el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});await waitSaved();
  assert.equal(await page.locator('audio').evaluate(el=>el.volume),0);assert.equal(await page.locator('video').evaluate(el=>el.volume),.7);assert.equal(await page.evaluate(()=>playing),true);
+ await videoCard.locator('[data-field=layoutOffsetX]').evaluate(el=>{el.value=42;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});await waitSaved();
+ assert.equal(await page.locator('#scoreMedia video').evaluate(el=>getComputedStyle(el.parentElement).translate),'42px');assert.equal(await page.evaluate(()=>playing),true);
+
  await page.locator('#playBtn').click();await page.waitForFunction(()=>!playing&&document.querySelector('audio').paused&&document.querySelector('video').paused);
  await page.evaluate(()=>seek(1.3));assert.ok(Math.abs(await page.locator('audio').evaluate(el=>el.currentTime)-.8)<.1);
  await page.locator('#tempoInput').fill('160');await page.locator('#playBtn').click();await page.waitForFunction(()=>playing&&document.querySelector('audio').playbackRate>1.4);
@@ -95,6 +98,7 @@ test('originals, multiple media, cues and note effects persist and work together
  assert.match(await page.locator('#uploadedFiles').textContent(),/studio.musicxml/);
  await page.reload();await page.waitForFunction(()=>songs.length===6);await page.locator('#recentGrid [data-open="'+id+'"]').first().click();await page.waitForSelector('#score svg');
  assert.equal(await page.locator('.media-card').count(),3);
+ assert.equal(await videoCard.locator('[data-field=layoutOffsetX]').inputValue(),'42');
  assert.equal(await videoCard.locator('[data-field=layoutWidth]').inputValue(),'60');assert.equal(await videoCard.locator('[data-field=layoutHeight]').inputValue(),'180');assert.equal(await videoCard.locator('[data-field=layoutFit]').inputValue(),'cover');
  await videoCard.locator('[data-media-action=reset-layout]').click();await waitSaved();assert.equal(await videoCard.locator('[data-field=layoutWidth]').inputValue(),'100');assert.equal(await videoCard.locator('[data-field=layoutHeight]').inputValue(),'320');
  assert.equal(await audioCard.locator('[data-field=volume]').inputValue(),'0');assert.equal(await page.locator('audio').evaluate(el=>el.volume),0);
