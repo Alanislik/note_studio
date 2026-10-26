@@ -233,6 +233,13 @@ class NotaStudio {
     this.close();
     this.lastPiece = piece.id;
     this.applyEffects(piece.effects || {});
+    if (this.online && SunsetMediaPreset.matches(piece) && !piece.appliedPresets?.includes(SunsetMediaPreset.id)) {
+      $('#mediaInput').disabled = true;
+      $('#mediaStatus').textContent = 'Сохраняются файлы сцены Sunset…';
+      try { await SunsetMediaPreset.install(this, piece); }
+      catch (error) { toast(error.message); }
+      if (this.lastPiece !== piece.id || view !== 'reader') return;
+    }
     this.renderMedia(piece);
   }
 
@@ -310,6 +317,21 @@ class NotaStudio {
       node.style.setProperty('--media-fit', layout.fit);
     }
     if (entry.slot) entry.slot.style.width = layout.width + '%';
+    if (entry.group) {
+      const scene = entry.item.scene || {};
+      const clamp = (value, fallback) => Number.isFinite(value) ? Math.max(0, Math.min(100,value)) : fallback;
+      entry.slot.style.left = scene.role === 'background' ? '0' : clamp(scene.x,50) + '%';
+      entry.slot.style.top = scene.role === 'background' ? '0' : clamp(scene.y,50) + '%';
+      entry.slot.style.zIndex = String(scene.role === 'background' ? 0 : clamp(scene.order,1));
+      if (scene.role === 'background') {
+        entry.slot.style.width = '100%';
+        if (!entry.slot.classList.contains('hidden')) {
+          entry.group.style.width = layout.width + '%';
+          entry.group.style.height = 'min(' + layout.height + 'px, 62vw)';
+        }
+        entry.slot.querySelector('img').style.transform = 'scale(' + (Number.isFinite(scene.zoom) ? Math.max(1,Math.min(3,scene.zoom)) : 1) + ')';
+      }
+    }
     const width = entry.card.querySelector('[data-layout-output=width]');
     const height = entry.card.querySelector('[data-layout-output=height]');
     if (width) width.textContent = layout.width + '%';
@@ -373,6 +395,7 @@ class NotaStudio {
     const stage = $('#scoreMedia');
     list.replaceChildren();
     stage.replaceChildren();
+    const groups = new Map();
 
     for (const item of piece.media || []) {
       const entry = this.createMediaCard(item);
@@ -380,7 +403,19 @@ class NotaStudio {
 
       // Под нотами у изображений и видео есть своё место; оно скрыто, пока не наступит время.
       entry.slot = this.createStageSlot(entry);
-      if (entry.slot) stage.append(entry.slot);
+      if (entry.slot) {
+        const key = entry.item.scene?.group;
+        if (typeof key === 'string' && key) {
+          if (!groups.has(key)) {
+            const group = document.createElement('div');
+            group.className = 'file-scene'; group.dataset.scene = key;
+            stage.append(group); groups.set(key, group);
+          }
+          entry.group = groups.get(key); entry.group.append(entry.slot);
+          entry.slot.classList.add('scene-layer');
+          entry.slot.dataset.role = entry.item.scene.role === 'background' ? 'background' : 'sprite';
+        } else stage.append(entry.slot);
+      }
       if (entry.type !== 'audio') this.applyLayout(entry);
 
       this.media.push(entry);
@@ -451,6 +486,8 @@ class NotaStudio {
 
   mediaCardHtml(item, type, volume, url) {
     const name = esc(item.name);
+    const sourceUrl = /^https:\/\/github\.com\//.test(item.source?.url || '') ? item.source.url : '';
+    const sourceLink = sourceUrl ? `<a class="media-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">${esc(item.source.label || 'Источник медиа')}</a>` : '';
 
     const volumeControl = type === 'image' ? '' : `
       <label class="media-volume">Громкость
@@ -473,6 +510,7 @@ class NotaStudio {
       <div class="media-info">
         <strong>${name}</strong>
         <small>${MEDIA_TYPE_LABELS[type]} · ${this.size(item.size)}</small>
+        ${sourceLink}
         ${volumeControl}
         ${sizeControl}
         <div class="media-timing">
@@ -736,6 +774,19 @@ class NotaStudio {
       // Под нотами медиа видно только на своём отрезке плеера.
       const showInStage = !!item.sync && active;
       this.placeInStage(entry, showInStage);
+      if (entry.group && showInStage) {
+        if (item.scene.role === 'background') {
+          const layout = this.layout(item);
+          entry.group.style.width = layout.width + '%';
+          entry.group.style.height = 'min(' + layout.height + 'px, 62vw)';
+        } else {
+          const moving = item.scene.motion && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const phase = time - start;
+          const x = moving ? Math.sin(phase * .5 + (item.scene.order || 0)) * 12 : 0;
+          const y = moving ? Math.sin(phase * 1.6 + (item.scene.order || 0)) * 6 : 0;
+          entry.slot.style.transform = `translate(calc(-50% + ${x.toFixed(2)}px), calc(-50% + ${y.toFixed(2)}px))`;
+        }
+      }
       stageHasContent ||= showInStage && !!entry.slot;
 
       if (type === 'image') continue;
@@ -776,6 +827,9 @@ class NotaStudio {
       if (shouldPlay) this.startMedia(entry);
     }
 
+    for (const group of $('#scoreMedia').querySelectorAll('.file-scene')) {
+      group.classList.toggle('hidden', ![...group.children].some(slot => !slot.classList.contains('hidden')));
+    }
     $('#scoreMedia').classList.toggle('hidden', !stageHasContent);
   }
 

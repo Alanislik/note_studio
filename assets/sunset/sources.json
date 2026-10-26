@@ -1,0 +1,22 @@
+[
+  {
+    "file": "kris.png",
+    "source": "https://github.com/ThePlasticPotato/Featherfall/blob/4c4df5fb842b6e23936249aca5d5bfcd385f8073/assets/sprites/party/kris/platform/jump_up_2.png",
+    "sha256": "1f4668ee7e6a8c64e2df7a77a18895d7bd5557c4e9291e69c103f6c571b7f7b2"
+  },
+  {
+    "file": "susie.png",
+    "source": "https://github.com/ThePlasticPotato/Featherfall/blob/4c4df5fb842b6e23936249aca5d5bfcd385f8073/assets/sprites/party/susie/platform/jump_2.png",
+    "sha256": "c9061103d5749d14bb7f030f6947abbe07ec70edfecb32014d93a16d31eef3ad"
+  },
+  {
+    "file": "ralsei.png",
+    "source": "https://github.com/ThePlasticPotato/Featherfall/blob/4c4df5fb842b6e23936249aca5d5bfcd385f8073/assets/sprites/party/ralsei/platform/jump_2.png",
+    "sha256": "c0cc43cecd53f16d1b260226a8baffb885539f657668838ab4c19a8f33d9fec8"
+  },
+  {
+    "file": "sunset.jpg",
+    "source": "https://github.com/nerdynerdenson-spec/deltarune-sunset/blob/402dc2e092cadeba621ea890c65a6ff1c62dfc04/deltarune%20sunset.jpg",
+    "sha256": "795a884b401030870cc4d5cebcda7e7a8744d69c29faa17a98cf8afee8753d40"
+  }
+]

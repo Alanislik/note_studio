@@ -1609,3 +1609,12 @@ button:disabled {
 .media-size-controls output{width:47px;text-align:right;font-variant-numeric:tabular-nums}
 .media-size-controls select{min-width:0;max-width:100%;flex:1;border:1px solid #e2dbed;border-radius:6px;padding:7px;background:white;font:inherit}
 .media-size-controls button{font-size:11px;padding:3px 0}
+
+/* A file-based montage: original JPEG/PNG attachments share a stage. */
+.file-scene{position:relative;width:100%;height:min(420px,62vw);min-height:180px;margin-inline:auto;overflow:hidden;border-radius:10px;isolation:isolate}
+.file-scene .scene-layer{position:absolute;margin:0;max-width:100%}
+.file-scene .scene-layer[data-role=background]{inset:0;width:100%;height:100%;overflow:hidden}
+.file-scene .scene-layer[data-role=background] img{width:100%;height:100%;object-fit:cover;transform-origin:left center}
+.file-scene .scene-layer[data-role=sprite]{height:var(--media-height,140px);max-height:48%;transform:translate(-50%,-50%)}
+.file-scene .scene-layer[data-role=sprite] img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;background:transparent}
+.media-source{display:inline-block;font-size:10px;color:#8b6f9d;margin-top:8px;text-decoration:underline;text-underline-offset:3px}
