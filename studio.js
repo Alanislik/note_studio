@@ -25,7 +25,6 @@ class NotaStudio {
     this.media = [];              // отрисованные вложения: { item, el, card, type, ... }
     this.saving = Promise.resolve(); // очередь записи, чтобы быстрые правки не затирали друг друга
     this.lastPiece = null;
-    this.visual = new SunsetVisual($('#sunsetCanvas'), fraction => seek(totalDuration * fraction));
   }
 
   // ---------------------------------------------------------------------------
@@ -95,28 +94,6 @@ class NotaStudio {
     list.addEventListener('input', event => { this.previewVolume(event); this.previewLayout(event); });
     list.addEventListener('change', event => this.changeMedia(event));
     list.addEventListener('click', event => this.mediaClick(event));
-
-    $('#sunsetEnabled').addEventListener('change', () => this.saveVisual());
-    $('#sunsetIntensity').addEventListener('input', () => {
-      this.visual.intensity = Number($('#sunsetIntensity').value) / 100;
-      $('#sunsetIntensityValue').textContent = $('#sunsetIntensity').value + '%';
-      this.visual.render(currentPosition());
-    });
-    $('#sunsetIntensity').addEventListener('change', () => this.saveVisual());
-    $('#sunsetSeek').addEventListener('input', () => {
-      // Preview scrubbing without restarting hundreds of audio voices on every pointer move.
-      this.visual.scrubTime = totalDuration * Number($('#sunsetSeek').value) / 1000;
-      this.visual.render(this.visual.scrubTime);
-    });
-    $('#sunsetSeek').addEventListener('change', () => {
-      const target = this.visual.scrubTime;
-      this.visual.scrubTime = null;
-      if (target !== null && target !== undefined) seek(target);
-    });
-    $('#sunsetSeek').addEventListener('blur', () => {
-      this.visual.scrubTime = null;
-      this.visual.render(currentPosition());
-    });
 
     // Когда пользователь возвращается на вкладку, подтягиваем медиа к позиции нот.
     document.addEventListener('visibilitychange', () => {
@@ -256,7 +233,6 @@ class NotaStudio {
     this.close();
     this.lastPiece = piece.id;
     this.applyEffects(piece.effects || {});
-    this.visual.configure(piece);
     this.renderMedia(piece);
   }
 
@@ -269,7 +245,6 @@ class NotaStudio {
     this.urls = [];
     this.lastPiece = null;
     $('#scoreMedia').classList.add('hidden');
-    this.visual.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -312,27 +287,6 @@ class NotaStudio {
       if (piece.effects === effects) {
         piece.effects = previous;
         this.applyEffects(previous || {});
-      }
-      toast(error.message);
-    }
-  }
-
-  async saveVisual() {
-    const piece = songs.find(p => p.id === activeId);
-    if (!piece) return;
-    const previous = piece.visual;
-    const options = { enabled: $('#sunsetEnabled').checked, intensity: Number($('#sunsetIntensity').value) / 100 };
-    piece.visual = options;
-    this.visual.enabled = options.enabled;
-    this.visual.intensity = options.intensity;
-    $('#sunsetScene').classList.toggle('hidden', !options.enabled);
-    this.visual.render(currentPosition());
-    try { await putPiece(piece); }
-    catch (error) {
-      if (piece.visual === options) {
-        piece.visual = previous;
-        const timing = { notes: this.visual.notes, duration: this.visual.duration };
-        this.visual.configure(piece); this.visual.setScore(timing);
       }
       toast(error.message);
     }
@@ -767,7 +721,6 @@ class NotaStudio {
    * @param force     принудительно перемотать, даже если расхождение небольшое
    */
   sync(time, isPlaying, speed = 1, force = false) {
-    this.visual.render(time);
     let stageHasContent = false;
 
     for (const entry of this.media) {
